@@ -17,9 +17,13 @@ wafer-pixel 是一个“物理桌面 AI”实验项目：
 - **编码派活**：说「小饼干活，帮我修一下登录报错」→ 转交 opencode 执行 → 进度/权限/结果回到语音和 LED。
 - **隐私优先**：本地门禁和本地 ASR 是默认路径；在线模式只发送已放行的文本，不发送原始音频。
 
-## 当前进度（对外唯一来源）
+## 实机效果
 
-> 本 README 是公开开发进度入口。内部开发日志、验收原始记录不进入公开仓库。
+<img src="assets/screenshots/pixelbar_celebrate.jpg" alt="PixelBar 实机庆祝表情" width="900">
+
+PixelBar 256×32 LED 上的庆祝表情（实拍）。
+
+## 当前进度
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
@@ -126,7 +130,6 @@ Copy-Item config\providers.local.example.yaml config\providers.local.yaml
 | `config/providers.local.yaml` | 否 | 用户真实端点/模型/音色，gitignored |
 | `.env` | 否 | 真实 API key，gitignored |
 | `data/`、`models/`、`logs/` | 否 | 声纹、模型、运行日志 |
-| `docs/DEVLOG.md` | 否 | 内部开发日志；只保留本地 |
 
 **在线模式只发送文本**：ASR 仍默认在本地；云端 LLM 收到的是转写文本，MiniMax 收到的是回复文本。原始麦克风音频不进入云端请求。
 
