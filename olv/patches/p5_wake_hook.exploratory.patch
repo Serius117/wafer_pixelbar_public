@@ -1,0 +1,34 @@
+# P5 (exploratory): olv wake-word hook -- standby mic feed to WakeController
+#
+# Wires OLV's mic frames into core.wake.WakeController.feed_pcm while the
+# session is in standby. OLV keeps its capture pipeline running in standby
+# (VAD off), the patch taps the raw frame callback.
+#
+# Upstream: Open-LLM-VTuber @ pin 992309c
+# Files touched (2):
+#   1. src/.../live2d/asr_server.py (or the active connection handler):
+#        frame callback -> wafer_bridge.on_mic_frame(pcm)
+#   2. olv/adapters/wiring.py (our side):
+#        WakeController(engine=SherpaKwsEngine(...)) +
+#        OlvAdapter.on_mic_frame -> asyncio.create_task(wake.feed_pcm(pcm))
+#
+# Sketch (our adapter side; exact upstream line numbers fixed at home):
+#
+#   # in olv/wiring.py, after pipeline construction:
+#   from core.wake import WakeController
+#   from engines.wakeword import SherpaKwsEngine
+#   wake = WakeController(bus=bus, state_machine=pipeline.state_machine,
+#                          engine=SherpaKwsEngine())
+#   adapter.on_mic_frame = lambda pcm: asyncio.create_task(wake.feed_pcm(pcm))
+#
+#   # upstream patch (asr_server.py, in the audio receive path):
+#   +       if hasattr(self.wafer_adapter, "on_mic_frame"):
+#   +           self.wafer_adapter.on_mic_frame(audio_bytes)
+#   +
+#         # existing VAD/conversation logic continues below ...
+#
+# Notes:
+#   - standby-only gating lives in WakeController.feed_pcm (core), so the
+#     patch stays dumb and safe
+#   - hotkey wake remains functional in parallel (D22 fallback)
+#   - to be formalized (patch -p1) after home verification (R.3, item 7)

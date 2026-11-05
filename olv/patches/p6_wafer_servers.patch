@@ -1,0 +1,298 @@
+diff --git a/src/open_llm_vtuber/asr/asr_factory.py b/src/open_llm_vtuber/asr/asr_factory.py
+index b5080c6..2a221b0 100644
+--- a/src/open_llm_vtuber/asr/asr_factory.py
++++ b/src/open_llm_vtuber/asr/asr_factory.py
+@@ -58,5 +58,15 @@ class ASRFactory:
+             from .sherpa_onnx_asr import VoiceRecognition as SherpaOnnxASR
+ 
+             return SherpaOnnxASR(**kwargs)
++        elif system_name == "wafer_llama_asr":
++            from .wafer_llama_asr import VoiceRecognition as WaferASR
++
++            return WaferASR(
++                base_url=kwargs.get("base_url", "http://127.0.0.1:8001"),
++                model=kwargs.get("model", "qwen3-asr"),
++                hotwords=kwargs.get("hotwords"),
++                timeout=kwargs.get("timeout", 60.0),
++                dump=kwargs.get("dump", False),
++            )
+         else:
+             raise ValueError(f"Unknown ASR system: {system_name}")
+diff --git a/src/open_llm_vtuber/asr/wafer_llama_asr.py b/src/open_llm_vtuber/asr/wafer_llama_asr.py
+new file mode 100644
+index 0000000..20329f9
+--- /dev/null
++++ b/src/open_llm_vtuber/asr/wafer_llama_asr.py
+@@ -0,0 +1,115 @@
++"""wafer ASR adapter: Qwen3-ASR served by llama-server (:8001).
++
++The model is a GGUF + audio projection (mmproj) loaded by llama-server; this
++class only wraps the OpenAI-style /v1/chat/completions call. Kept out of the
++ASR factory's built-in list so the upstream tree stays replaceable (see
++olv/patches/p6_wafer_servers.patch).
++"""
++
++import base64
++import io
++import re
++import wave
++
++import httpx
++import numpy as np
++from loguru import logger
++
++from .asr_interface import ASRInterface
++
++_PREFIX_LANG_RE = re.compile(
++    r"^\s*language\s*[:=]?\s*([A-Za-z\u4e00-\u9fff\-_ ]{2,24}?)\s*"
++    r"(?:<\s*/?\s*asr_text\s*/?\s*>|\|\s*asr_text\s*\|)",
++    re.I,
++)
++_LANG_TAG_RE = re.compile(r"^\s*<\|\s*([A-Za-z\-_]+)\s*\|>\s*")
++_ASR_TEXT_TAG_RE = re.compile(r"<\s*/?\s*asr_text\s*/?>", re.I)
++_ANY_TAG_RE = re.compile(r"<\|[^|>]{0,24}\|>")
++
++
++def clean_asr_text(raw: str) -> str:
++    """Strip Qwen3-ASR's language prefixes / special tokens."""
++    s = str(raw or "").strip()
++    match = _PREFIX_LANG_RE.match(s)
++    if match:
++        s = s[match.end():]
++    else:
++        s = _LANG_TAG_RE.sub("", s, count=1)
++    s = _ASR_TEXT_TAG_RE.sub("", s)
++    s = _ANY_TAG_RE.sub("", s)
++    return s.strip().strip("\"'“”‘’").strip()
++
++
++def pcm_to_wav_b64(audio: np.ndarray, sample_rate: int = 16000) -> str:
++    """float32 [-1,1] mono -> base64 wav (16-bit PCM)."""
++    pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
++    buf = io.BytesIO()
++    with wave.open(buf, "wb") as handle:
++        handle.setnchannels(1)
++        handle.setsampwidth(2)
++        handle.setframerate(sample_rate)
++        handle.writeframes(pcm.tobytes())
++    return base64.b64encode(buf.getvalue()).decode("ascii")
++
++
++class VoiceRecognition(ASRInterface):
++    def __init__(
++        self,
++        base_url: str = "http://127.0.0.1:8001",
++        model: str = "qwen3-asr",
++        hotwords=None,
++        timeout: float = 60.0,
++        dump: bool = False,
++    ) -> None:
++        self._url = base_url.rstrip("/")
++        self._model = model
++        self._hotwords = list(hotwords or [])
++        self._timeout = timeout
++        self._dump = dump
++        logger.info(f"wafer ASR: llama-server at {self._url} (model={model})")
++
++    def transcribe_np(self, audio: np.ndarray) -> str:
++        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
++        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
++        rms = float(np.sqrt(np.mean(audio ** 2))) if audio.size else 0.0
++        # Some clients send int16-scaled values; llama-server expects [-1, 1].
++        if peak > 1.5:
++            audio = audio / 32768.0
++            peak = peak / 32768.0
++            rms = rms / 32768.0
++        logger.info(f"wafer ASR input: samples={audio.size} "
++                    f"({audio.size / self.SAMPLE_RATE:.1f}s) "
++                    f"peak={peak:.3f} rms={rms:.4f}")
++        if self._dump:
++            self.nparray_to_audio_file(audio, self.SAMPLE_RATE,
++                                       "cache/wafer_asr_last.wav")
++        content = [{
++            "type": "input_audio",
++            "input_audio": {
++                "data": f"data:audio/wav;base64,"
++                        f"{pcm_to_wav_b64(audio, self.SAMPLE_RATE)}",
++                "format": "wav",
++            },
++        }]
++        if self._hotwords:
++            content.append({"type": "text",
++                            "text": "Hotwords: " + ", ".join(self._hotwords[:24])})
++        # Long utterances need more output budget (256 truncates ~30s speech).
++        seconds = audio.size / self.SAMPLE_RATE
++        max_tokens = max(256, min(2048, int(seconds * 20)))
++        payload = {
++            "model": self._model,
++            "messages": [{"role": "user", "content": content}],
++            "max_tokens": max_tokens,
++            "temperature": 0.0,
++            "stream": False,
++        }
++        try:
++            resp = httpx.post(f"{self._url}/v1/chat/completions",
++                              json=payload, timeout=self._timeout)
++            resp.raise_for_status()
++            raw = resp.json()["choices"][0]["message"]["content"]
++        except Exception as exc:  # noqa: BLE001 -- degrade: caller handles ""
++            logger.error(f"wafer ASR request failed: {exc}")
++            return ""
++        return clean_asr_text(raw)
+diff --git a/src/open_llm_vtuber/config_manager/asr.py b/src/open_llm_vtuber/config_manager/asr.py
+index d70ea6c..c5356c1 100644
+--- a/src/open_llm_vtuber/config_manager/asr.py
++++ b/src/open_llm_vtuber/config_manager/asr.py
+@@ -307,6 +307,16 @@ class SherpaOnnxASRConfig(I18nMixin):
+         return values
+ 
+ 
++class WaferLlamaASRConfig(I18nMixin):
++    """Configuration for the wafer Qwen3-ASR llama-server."""
++
++    base_url: str = Field("http://127.0.0.1:8001", alias="base_url")
++    model: str = Field("qwen3-asr", alias="model")
++    hotwords: Optional[list[str]] = Field(None, alias="hotwords")
++    timeout: float = Field(60.0, alias="timeout")
++    dump: bool = Field(False, alias="dump")
++
++
+ class ASRConfig(I18nMixin):
+     """Configuration for Automatic Speech Recognition."""
+ 
+@@ -318,6 +328,7 @@ class ASRConfig(I18nMixin):
+         "fun_asr",
+         "groq_whisper_asr",
+         "sherpa_onnx_asr",
++        "wafer_llama_asr",
+     ] = Field(..., alias="asr_model")
+     azure_asr: Optional[AzureASRConfig] = Field(None, alias="azure_asr")
+     faster_whisper: Optional[FasterWhisperConfig] = Field(None, alias="faster_whisper")
+@@ -330,6 +341,9 @@ class ASRConfig(I18nMixin):
+     sherpa_onnx_asr: Optional[SherpaOnnxASRConfig] = Field(
+         None, alias="sherpa_onnx_asr"
+     )
++    wafer_llama_asr: Optional[WaferLlamaASRConfig] = Field(
++        None, alias="wafer_llama_asr"
++    )
+ 
+     DESCRIPTIONS: ClassVar[Dict[str, Description]] = {
+         "asr_model": Description(
+@@ -371,5 +385,7 @@ class ASRConfig(I18nMixin):
+             values.groq_whisper_asr.model_validate(values.groq_whisper_asr.model_dump())
+         elif asr_model == "SherpaOnnxASR" and values.sherpa_onnx_asr is not None:
+             values.sherpa_onnx_asr.model_validate(values.sherpa_onnx_asr.model_dump())
++        elif asr_model == "wafer_llama_asr" and values.wafer_llama_asr is not None:
++            values.wafer_llama_asr.model_validate(values.wafer_llama_asr.model_dump())
+ 
+         return values
+diff --git a/src/open_llm_vtuber/config_manager/tts.py b/src/open_llm_vtuber/config_manager/tts.py
+index 9822bff..dfed517 100644
+--- a/src/open_llm_vtuber/config_manager/tts.py
++++ b/src/open_llm_vtuber/config_manager/tts.py
+@@ -680,6 +680,14 @@ class CartesiaTTSConfig(I18nMixin):
+     }
+ 
+ 
++class WaferHttpTTSConfig(I18nMixin):
++    """Configuration for the wafer CosyVoice HTTP server."""
++
++    base_url: str = Field("http://127.0.0.1:9880", alias="base_url")
++    timeout: float = Field(300.0, alias="timeout")
++    file_extension: str = Field("wav", alias="file_extension")
++
++
+ class TTSConfig(I18nMixin):
+     """Configuration for Text-to-Speech."""
+ 
+@@ -702,6 +710,7 @@ class TTSConfig(I18nMixin):
+         "elevenlabs_tts",
+         "cartesia_tts",
+         "piper_tts",
++        "wafer_http_tts",
+     ] = Field(..., alias="tts_model")
+ 
+     azure_tts: Optional[AzureTTSConfig] = Field(None, alias="azure_tts")
+@@ -726,6 +735,9 @@ class TTSConfig(I18nMixin):
+     elevenlabs_tts: ElevenLabsTTSConfig | None = Field(None, alias="elevenlabs_tts")
+     cartesia_tts: CartesiaTTSConfig | None = Field(None, alias="cartesia_tts")
+     piper_tts: Optional[PiperTTSConfig] = Field(None, alias="piper_tts")
++    wafer_http_tts: Optional[WaferHttpTTSConfig] = Field(
++        None, alias="wafer_http_tts"
++    )
+ 
+     DESCRIPTIONS: ClassVar[Dict[str, Description]] = {
+         "tts_model": Description(
+@@ -813,4 +825,6 @@ class TTSConfig(I18nMixin):
+ 
+         elif tts_model == "piper_tts" and values.piper_tts is not None:
+             values.piper_tts.model_validate(values.piper_tts.model_dump())
++        elif tts_model == "wafer_http_tts" and values.wafer_http_tts is not None:
++            values.wafer_http_tts.model_validate(values.wafer_http_tts.model_dump())
+         return values
+diff --git a/src/open_llm_vtuber/tts/tts_factory.py b/src/open_llm_vtuber/tts/tts_factory.py
+index 1fd5f50..9f244c1 100644
+--- a/src/open_llm_vtuber/tts/tts_factory.py
++++ b/src/open_llm_vtuber/tts/tts_factory.py
+@@ -211,6 +211,14 @@ class TTSFactory:
+                 normalize_audio=kwargs.get("normalize_audio"),
+                 use_cuda=kwargs.get("use_cuda"),
+             )
++        elif engine_type == "wafer_http_tts":
++            from .wafer_http_tts import TTSEngine as WaferTTSEngine
++
++            return WaferTTSEngine(
++                base_url=kwargs.get("base_url", "http://127.0.0.1:9880"),
++                timeout=kwargs.get("timeout", 300.0),
++                file_extension=kwargs.get("file_extension", "wav"),
++            )
+         else:
+             raise ValueError(f"Unknown TTS engine type: {engine_type}")
+ 
+diff --git a/src/open_llm_vtuber/tts/wafer_http_tts.py b/src/open_llm_vtuber/tts/wafer_http_tts.py
+new file mode 100644
+index 0000000..0e1278c
+--- /dev/null
++++ b/src/open_llm_vtuber/tts/wafer_http_tts.py
+@@ -0,0 +1,41 @@
++"""wafer TTS adapter: CosyVoice served by wafer's cosyvoice_server (:9880).
++
++OLV's TTS interface is file-based, so each call writes one wav into OLV's
++`cache/` directory and returns its path; OLV plays it and deletes it.
++The server does clause splitting internally, so long sentences still come
++back in one file (latency is handled by OLV's sentence divider).
++"""
++
++import httpx
++from loguru import logger
++
++from .tts_interface import TTSInterface
++
++
++class TTSEngine(TTSInterface):
++    def __init__(
++        self,
++        base_url: str = "http://127.0.0.1:9880",
++        timeout: float = 300.0,
++        file_extension: str = "wav",
++    ) -> None:
++        self._url = base_url.rstrip("/")
++        self._timeout = timeout
++        self.file_extension = file_extension
++        logger.info(f"wafer TTS: cosyvoice_server at {self._url}")
++
++    def generate_audio(self, text, file_name_no_ext=None):
++        file_name = self.generate_cache_file_name(
++            file_name_no_ext, self.file_extension)
++        try:
++            resp = httpx.post(f"{self._url}/synthesize",
++                              json={"text": text}, timeout=self._timeout)
++            resp.raise_for_status()
++            if not resp.content.startswith(b"RIFF"):
++                raise RuntimeError("cosyvoice_server returned non-wav payload")
++            with open(file_name, "wb") as handle:
++                handle.write(resp.content)
++            return file_name
++        except Exception as exc:  # noqa: BLE001 -- degrade to silence
++            logger.error(f"wafer TTS failed: {exc}")
++            return ""

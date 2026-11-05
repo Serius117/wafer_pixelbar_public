@@ -1,0 +1,93 @@
+# Local inference trio -- plan A (D40, 2026-10-18).
+#
+# All three run on the RTX 4070S. Measured: v1 trio 10.2GB / v2-clone trio
+# ~11.1GB (Edge audio page needs ~0.5-1GB, so keep ctx at 3072 on v2).
+# Paths are relative to the repo root.
+#
+#   ./scripts/serve_inference.py --start     (starts all three, waits healthy)
+#   ./scripts/serve_inference.py --status
+#   ./scripts/serve_inference.py --stop
+
+# Portable public default; override in config/providers.local.yaml if your CUDA
+# llama-server build lives elsewhere.
+llama_server: llama-server.exe
+
+llm:
+  # local = llama-server :8080 (default); openai_compat = arbitrary cloud API.
+  # For cloud, copy config/providers.local.example.yaml and edit the
+  # gitignored providers.local.yaml; put the key in .env.
+  provider: local
+  model: models/llm/Qwen3.5-9B-Q4_K_M.gguf
+  host: 127.0.0.1
+  port: 8080
+  ctx: 8192
+  n_gpu_layers: 99
+  # Qwen3.5 thinks by default; that eats the [emotion:...] prefix budget.
+  extra_args: ["--reasoning", "off", "--no-webui",
+                "-ctk", "q8_0", "-ctv", "q8_0"]
+  openai_compat:
+    base_url: ""                  # or WAFER_LLM_BASE_URL
+    base_url_env: WAFER_LLM_BASE_URL
+    model: deepseek-v4.1-flash    # or WAFER_LLM_MODEL
+    model_env: WAFER_LLM_MODEL
+    api_key_env: WAFER_LLM_API_KEY
+    timeout: 60
+
+asr:
+  model: models/asr/qwen3-asr-0.6b/Qwen3-ASR-0.6B-Q8_0.gguf
+  mmproj: models/asr/qwen3-asr-0.6b/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf
+  alias: qwen3-asr
+  host: 127.0.0.1
+  port: 8001
+  ctx: 1024
+  n_gpu_layers: 0   # plan A: ASR on CPU (frees 1.8GB for the 9B LLM)
+  extra_args: ["--no-webui"]
+
+# TTS -- profiles (select with tts.provider):
+#   gpt_sovits (current, D56): local GPT-SoVITS v2Pro behind the common HTTP
+#     contract; RTF 0.31-0.51 on the 4070S, reference = user voice.
+#   aliyun_cosyvoice (D57, optional): DashScope CosyVoice v3.5-flash, needs
+#     DASHSCOPE_API_KEY + DASHSCOPE_WORKSPACE_ID + DASHSCOPE_VOICE_ID.
+#     Create the cloned voice with scripts/aliyun_voice_clone.py first.
+#   cosyvoice: local CosyVoice2 fallback (same contract).
+tts:
+  provider: gpt_sovits
+  python: third_party/GPT-SoVITS/.venv/Scripts/python.exe
+  server: scripts/gpt_sovits_server.py
+  model_dir: third_party/GPT-SoVITS/GPT_SoVITS/pretrained_models
+  spk_id: ""
+  prompt_wav: data/prompts/reference.wav
+  prompt_text: 您好，很高兴能为您提供配音服务。选择您感兴趣的音色，让我们一起开启声音创作的奇幻之旅吧。
+  host: 127.0.0.1
+  port: 9880
+  device: cuda
+  fp16: true
+  extra_args: []
+  # Switch tts.provider to aliyun_cosyvoice after the voice is created.
+  aliyun_cosyvoice:
+    python: .venv/Scripts/python.exe
+    server: scripts/dashscope_tts_server.py
+    model: cosyvoice-v3.5-flash
+    voice_id: ""                 # prefer DASHSCOPE_VOICE_ID in .env
+    voice_id_env: DASHSCOPE_VOICE_ID
+    api_key_env: DASHSCOPE_API_KEY
+    workspace_id_env: DASHSCOPE_WORKSPACE_ID
+    region: cn-beijing
+    sample_rate: 24000
+    format: wav
+    language: zh
+    timeout: 60
+    extra_args: []
+  # MiniMax T2A v2 (TASK.PROVIDER.02). Keys: MINIMAX_API_KEY in .env.
+  minimax:
+    python: .venv/Scripts/python.exe
+    server: scripts/minimax_tts_server.py
+    model: speech-2.8-hd
+    voice_id: Chinese_crisp_podcaster_nv1
+    endpoint: https://api.minimax.cn/v1/t2a_v2
+    api_key_env: MINIMAX_API_KEY
+    group_id_env: MINIMAX_GROUP_ID
+    sample_rate: 32000
+    format: wav
+    timeout: 60
+    extra_args: []

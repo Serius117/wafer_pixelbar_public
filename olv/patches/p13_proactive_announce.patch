@@ -1,0 +1,160 @@
+diff --git a/src/open_llm_vtuber/agent/agent_factory.py b/src/open_llm_vtuber/agent/agent_factory.py
+--- a/src/open_llm_vtuber/agent/agent_factory.py
++++ b/src/open_llm_vtuber/agent/agent_factory.py
+@@ -190,7 +190,9 @@ class _WaferAgentAdapter(AgentInterface):
+                 except Exception:
+                     pass
+ 
++        metadata = getattr(input_data, "metadata", None) or {}
++
+         # Delegate to WaferAgent (yields (display, tts) tuples)
+-        async for display, tts_text in self._wafer.chat(text):
++        async for display, tts_text in self._wafer.chat(
++                text, metadata=metadata):
+             dt = DisplayText(text=display, name="AI", avatar=None)
+             actions = Actions()
+             yield SentenceOutput(
+diff --git a/src/open_llm_vtuber/conversations/conversation_handler.py b/src/open_llm_vtuber/conversations/conversation_handler.py
+--- a/src/open_llm_vtuber/conversations/conversation_handler.py
++++ b/src/open_llm_vtuber/conversations/conversation_handler.py
+@@ -33,26 +33,38 @@ async def handle_conversation_trigger(
+     metadata = None
+ 
+     if msg_type == "ai-speak-signal":
+-        try:
+-            # Get proactive speak prompt from config
+-            prompt_name = "proactive_speak_prompt"
+-            prompt_file = context.system_config.tool_prompts.get(prompt_name)
+-            if prompt_file:
+-                user_input = prompt_loader.load_util(prompt_file)
+-            else:
+-                logger.warning("Proactive speak prompt not configured, using default")
+-                user_input = "Please say something."
+-        except Exception as e:
+-            logger.error(f"Error loading proactive speak prompt: {e}")
+-            user_input = "Please say something."
+-
+-        # Add metadata to indicate this is a proactive speak request
+-        # that should be skipped in both memory and history
+-        metadata = {
+-            "proactive_speak": True,
+-            "skip_memory": True,  # Skip storing in AI's internal memory
+-            "skip_history": True,  # Skip storing in local conversation history
+-        }
++        announcement = str(data.get("announcement") or "").strip()
++        if announcement:
++            # TASK.RELEASE.08: a concrete result summary from wafer-hub.
++            # WaferAgent.chat() will speak it verbatim (no routing/LLM).
++            user_input = announcement
++            metadata = {
++                "proactive_speak": True,
++                "skip_memory": True,
++                "skip_history": True,
++                "wafer_announcement": True,
++            }
++        else:
++            try:
++                # Get proactive speak prompt from config
++                prompt_name = "proactive_speak_prompt"
++                prompt_file = context.system_config.tool_prompts.get(prompt_name)
++                if prompt_file:
++                    user_input = prompt_loader.load_util(prompt_file)
++                else:
++                    logger.warning("Proactive speak prompt not configured, using default")
++                    user_input = "Please say something."
++            except Exception as e:
++                logger.error(f"Error loading proactive speak prompt: {e}")
++                user_input = "Please say something."
++
++            # Add metadata to indicate this is a proactive speak request
++            # that should be skipped in both memory and history
++            metadata = {
++                "proactive_speak": True,
++                "skip_memory": True,  # Skip storing in AI's internal memory
++                "skip_history": True,  # Skip storing in local conversation history
++            }
+ 
+         await websocket.send_text(
+             json.dumps(
+diff --git a/src/open_llm_vtuber/websocket_handler.py b/src/open_llm_vtuber/websocket_handler.py
+--- a/src/open_llm_vtuber/websocket_handler.py
++++ b/src/open_llm_vtuber/websocket_handler.py
+@@ -69,6 +69,9 @@ class WebSocketHandler:
+         self.current_conversation_tasks: Dict[str, Optional[asyncio.Task]] = {}
+         self.default_context_cache = default_context_cache
+         self.received_data_buffers: Dict[str, np.ndarray] = {}
++        # TASK.RELEASE.08: serialise task-result announcements per client.
++        self.announce_locks: Dict[str, asyncio.Lock] = {}
++        self.announce_tasks: set[asyncio.Task] = set()
+ 
+         # Message handlers mapping
+         self._message_handlers = self._init_message_handlers()
+@@ -124,6 +127,17 @@ class WebSocketHandler:
+             await self._store_client_data(
+                 websocket, client_uid, session_service_context
+             )
+ 
++            # TASK.RELEASE.08: result announcements go through a per-client
++            # queue; the hub callback only enqueues, never blocks on TTS.
++            try:
++                from olv.wafer_hooks import set_announce_sender
++
++                set_announce_sender(
++                    lambda task_id, text, uid=client_uid:
++                    self._schedule_announce(uid, text)
++                )
++            except ImportError:
++                pass
++
+             await self._send_initial_messages(
+                 websocket, client_uid, session_service_context
+             )
+@@ -305,6 +319,13 @@ class WebSocketHandler:
+         self.client_connections.pop(client_uid, None)
+         self.client_contexts.pop(client_uid, None)
+         self.received_data_buffers.pop(client_uid, None)
++        self.announce_locks.pop(client_uid, None)
++        try:
++            from olv.wafer_hooks import set_announce_sender
++
++            set_announce_sender(None)
++        except ImportError:
++            pass
+         if client_uid in self.current_conversation_tasks:
+             task = self.current_conversation_tasks[client_uid]
+             if task and not task.done():
+@@ -510,6 +531,34 @@ class WebSocketHandler:
+                         json.dumps({"type": "control", "text": "mic-audio-end"})
+                     )
+ 
++    def _schedule_announce(self, client_uid: str, text: str) -> None:
++        """Enqueue a proactive announcement without blocking the hub callback."""
++        if client_uid not in self.client_connections:
++            return
++        task = asyncio.create_task(self._announce_result(client_uid, text))
++        self.announce_tasks.add(task)
++        task.add_done_callback(self.announce_tasks.discard)
++
++    async def _announce_result(self, client_uid: str, text: str) -> None:
++        """Wait for any active turn, then speak the result through OLV TTS."""
++        lock = self.announce_locks.setdefault(client_uid, asyncio.Lock())
++        async with lock:
++            while True:
++                current = self.current_conversation_tasks.get(client_uid)
++                if current and not current.done():
++                    await current
++                    continue
++                break
++            websocket = self.client_connections.get(client_uid)
++            if websocket is None:
++                return
++            await self._handle_conversation_trigger(
++                websocket, client_uid,
++                {"type": "ai-speak-signal", "announcement": text})
++            current = self.current_conversation_tasks.get(client_uid)
++            if current:
++                await current
++
+     async def _handle_conversation_trigger(
+         self, websocket: WebSocket, client_uid: str, data: WSMessage
+     ) -> None:

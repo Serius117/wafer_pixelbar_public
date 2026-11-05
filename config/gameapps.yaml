@@ -1,0 +1,23 @@
+# 游戏检测白名单与停栈命令（T5.6 / D29 游戏模式 = 能听不能说）
+#
+# 进入游戏（stop_commands 顺序执行）：
+#   1. 停 GPU 上的 ASR llama-server（按端口/PID 定位）
+#   2. 停 9B LLM（ollama stop / 杀 llama-server）
+#   3. 停 CosyVoice（TTS 不部署 = 不能说）
+#   4. 起 CPU 版 0.6B ASR llama-server（-ngl 0，零显存 = 能听）
+# 退出游戏（start_commands 顺序执行）：反向（停 CPU ASR → 起 GPU 栈）
+#
+# 命令在家按实际部署填充；示例（PowerShell）：
+#   stop_commands:
+#     - "powershell -File scripts/game_stop_stack.ps1"   # 杀 GPU 栈 + 起 CPU ASR
+#   start_commands:
+#     - "powershell -File scripts/game_start_stack.ps1"  # 停 CPU ASR + 起 GPU 栈
+
+whitelist:
+  # 在家按需填写游戏进程名（小写），示例：
+  # - eldenring.exe
+  # - dota2.exe
+
+stack:
+  stop_commands: []   # 进入游戏时执行（停 GPU 栈 + 起 CPU 0.6B ASR）
+  start_commands: []  # 退出游戏时执行（停 CPU ASR + 起 GPU 栈）

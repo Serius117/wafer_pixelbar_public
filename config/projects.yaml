@@ -1,0 +1,10 @@
+# 多项目工作台（公开示例）
+# 使用前请把 path 改成你自己的目录；不要提交真实个人路径。
+default: 本项目
+projects:
+  工作台:
+    path: ./workspace
+    description: 默认沙箱（按需修改）
+  本项目:
+    path: .
+    description: wafer-pixel 本体（相对仓库根）

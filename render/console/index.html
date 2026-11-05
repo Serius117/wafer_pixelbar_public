@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>小饼 console</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", monospace; background: #0a0e14;
+         color: #d8e0e8; margin: 0; padding: 16px; max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 12px; color: #7ef0a8; }
+
+  /* LED preview strip */
+  .led-strip {
+    background: #000; border: 2px solid #1a2530; border-radius: 8px;
+    padding: 12px; margin-bottom: 16px; position: relative;
+  }
+  .led-strip h2 { font-size: 11px; color: #4a6a7a; margin: 0 0 8px;
+                  text-transform: uppercase; letter-spacing: 2px; }
+  #led { display: block; margin: 0 auto; image-rendering: pixelated;
+         border-radius: 2px; box-shadow: 0 0 20px rgba(0,255,100,0.15);
+         background: #000; }
+  .led-info { text-align: center; font-size: 11px; color: #3a5a6a; margin-top: 6px; }
+
+  /* Expression test buttons */
+  .expr-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; justify-content: center; }
+  .expr-row button {
+    background: #162030; color: #8ab0c0; border: 1px solid #243545;
+    border-radius: 4px; padding: 3px 10px; font-size: 11px; cursor: pointer;
+    font-family: inherit;
+  }
+  .expr-row button:hover { background: #1e3040; color: #b0d0e0; }
+  .expr-row button.active { background: #0a3020; color: #7ef0a8; border-color: #2a6040; }
+
+  /* Status cards */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 12px; margin-bottom: 16px; }
+  .card { background: #121a24; border: 1px solid #1e2a38; border-radius: 8px;
+          padding: 12px; }
+  .card h2 { font-size: 11px; color: #5a7a8a; margin: 0 0 8px; font-weight: normal;
+             text-transform: uppercase; letter-spacing: 1px; }
+  .big { font-size: 20px; font-weight: 600; }
+  .listening { color: #ffd24a; } .thinking { color: #7ec8ff; }
+  .speaking { color: #7ef0a8; } .standby { color: #4a5a68; }
+  .task_running { color: #c39bff; }
+
+  /* Controls */
+  .controls { margin-bottom: 16px; }
+  .controls button {
+    background: #1a2838; color: #c0d8e8; border: 1px solid #2a4055;
+    border-radius: 6px; padding: 8px 16px; margin: 0 6px 6px 0; cursor: pointer;
+    font-size: 13px; font-family: inherit; transition: background 0.2s;
+  }
+  .controls button:hover { background: #243850; }
+  .controls button.danger { border-color: #5a2020; }
+  .controls button.danger:hover { background: #302020; }
+
+  /* Event stream */
+  #events { max-height: 300px; overflow-y: auto; background: #0a1018;
+            border: 1px solid #1a2530; border-radius: 8px; padding: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td { padding: 3px 8px; border-bottom: 1px solid #141e28; vertical-align: top; }
+  td.topic { color: #6a9ab8; white-space: nowrap; }
+  td.seq { color: #3a5a68; }
+
+  .muted { color: #3a5a68; font-size: 12px; }
+  .project-card select, .project-card input {
+    background: #0a1018; color: #c0d8e8; border: 1px solid #2a4055;
+    border-radius: 4px; padding: 4px 8px; font-size: 12px; font-family: inherit;
+  }
+</style>
+</head>
+<body>
+<h1>小饼 console <span class="muted" id="conn">…</span>
+  <a href="/compare" style="font-size:13px;color:#4a6a7a;text-decoration:none;margin-left:12px;">五屏表情对比 ↗</a></h1>
+
+<!-- LED Face Preview -->
+<div class="led-strip">
+  <h2>LED FACE · 256×32</h2>
+  <div style="position:relative; display:inline-block; width:100%; max-width:1536px;">
+    <canvas id="led" width="256" height="32"
+      style="width:100%; aspect-ratio:256/32; image-rendering:pixelated;
+             display:block; border-radius:2px; background:#000;"></canvas>
+    <!-- LED grid overlay: 1px dark line every 6px (5px LED + 1px gap) -->
+    <div style="position:absolute; top:0; left:0; width:100%; height:100%;
+         pointer-events:none; border-radius:2px;
+         background-image:
+           repeating-linear-gradient(0deg, transparent 0, transparent calc(100%/32 - 1px), rgba(10,10,15,0.8) calc(100%/32 - 1px), rgba(10,10,15,0.8) calc(100%/32)),
+           repeating-linear-gradient(90deg, transparent 0, transparent calc(100%/256 - 1px), rgba(10,10,15,0.8) calc(100%/256 - 1px), rgba(10,10,15,0.8) calc(100%/256));"></div>
+  </div>
+  <div class="led-info" id="led_info">connecting…</div>
+  <div style="text-align:center; margin-top:4px">
+    <span id="current_expr" style="font-size:13px; color:#7ef0a8;">expression: —</span>
+    <span id="color_debug" class="muted" style="margin-left:12px; font-size:11px;"></span>
+  </div>
+  <!-- Face style switcher -->
+  <div style="text-align:center; margin-top:8px; margin-bottom:6px;">
+    <span style="font-size:11px; color:#5a7a8a; margin-right:8px;">FACE STYLE:</span>
+    <button onclick="faceSwitch('wafer',this)" style="background:#0a3020;color:#7ef0a8;border:1px solid #2a6040;border-radius:4px;padding:4px 14px;font-size:12px;cursor:pointer;font-family:inherit;">wafer ★</button>
+    <button onclick="faceSwitch('mochi',this)" style="background:#1a2838;color:#c0d8e8;border:1px solid #2a4055;border-radius:4px;padding:4px 14px;font-size:12px;cursor:pointer;font-family:inherit;">mochi</button>
+    <button onclick="faceSwitch('bubble',this)" style="background:#1a2838;color:#c0d8e8;border:1px solid #2a4055;border-radius:4px;padding:4px 14px;font-size:12px;cursor:pointer;font-family:inherit;">bubble</button>
+    <button onclick="faceSwitch('mech',this)" style="background:#1a2838;color:#c0d8e8;border:1px solid #2a4055;border-radius:4px;padding:4px 14px;font-size:12px;cursor:pointer;font-family:inherit;">mech</button>
+    <button onclick="faceSwitch('claw',this)" style="background:#1a2838;color:#c0d8e8;border:1px solid #2a4055;border-radius:4px;padding:4px 14px;font-size:12px;cursor:pointer;font-family:inherit;">claw</button>
+    <span id="face_style_label" style="font-size:12px;color:#7ef0a8;margin-left:8px;">← wafer (default)</span>
+  </div>
+  <div class="expr-row" id="expr_buttons">
+    <button onclick="setExpr('normal',this)">normal</button>
+    <button onclick="setExpr('happy',this)">happy</button>
+    <button onclick="setExpr('sad',this)">sad</button>
+    <button onclick="setExpr('angry',this)">angry</button>
+    <button onclick="setExpr('surprised',this)">surprised</button>
+    <button onclick="setExpr('cute',this)">cute</button>
+    <button onclick="setExpr('tired',this)">tired</button>
+    <button onclick="setExpr('sleepy',this)">sleepy</button>
+    <button onclick="setExpr('thinking',this)">thinking</button>
+    <button onclick="setExpr('scared',this)">scared</button>
+    <button onclick="setExpr('wink',this)">wink</button>
+  </div>
+</div>
+
+<!-- Status Cards -->
+<div class="grid">
+  <div class="card"><h2>Session</h2><div class="big" id="session">standby</div></div>
+  <div class="card"><h2>Mode</h2><div class="big" id="mode">normal</div></div>
+  <div class="card"><h2>Gate</h2><div class="big" id="gate">—</div></div>
+  <div class="card"><h2>Task</h2><div class="big" id="task">—</div></div>
+  <div class="card"><h2>LED Text <span style="font-size:10px;color:#5a7a8a;">(D36)</span></h2><div class="big" id="textface">—</div></div>
+  <div class="card project-card"><h2>Project</h2>
+    <div id="current_project" class="big" style="font-size:14px">—</div>
+    <div style="margin-top:6px; display:flex; gap:6px; align-items:center;">
+      <select id="project_select" style="flex:1"></select>
+      <button onclick="switchProject()" style="padding:4px 12px">切换</button>
+    </div>
+  </div>
+</div>
+
+<!-- Controls -->
+<div class="card controls">
+  <h2>Controls</h2>
+  <button onclick="ctl('wake')">☀️ 唤醒</button>
+  <button onclick="ctl('sleep')">🌙 睡眠</button>
+  <button onclick="ctl('gate_toggle')">🔒 门禁</button>
+  <button onclick="ctl('mode_normal')">💼 工作</button>
+  <button onclick="ctl('mode_game')">🎮 游戏</button>
+  <button onclick="ctl('approve')">✓ 批准</button>
+  <button onclick="ctl('deny')">✗ 拒绝</button>
+  <button class="danger" onclick="ctl('task_cancel')">✕ 取消任务</button>
+</div>
+
+<!-- Event Stream -->
+<div class="card">
+  <h2>Event Stream</h2>
+  <div id="events"><table id="evtable"></table></div>
+</div>
+
+<script>
+let since = 0;
+function esc(s) { return String(s).replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function poll() {
+  try {
+    const st = await (await fetch('/api/state')).json();
+    document.getElementById('session').textContent = st.session_state || '—';
+    document.getElementById('session').className = 'big ' + (st.session_state || '');
+    document.getElementById('mode').textContent = st.mode || '—';
+    document.getElementById('gate').textContent =
+      st.gate ? `${st.gate.verdict}${st.gate.speaker_id ? ' · ' + st.gate.speaker_id : ''}` : '—';
+    document.getElementById('task').textContent =
+      st.task ? (st.task.done || st.task.phase || '…') : '—';
+    const tf = document.getElementById('textface');
+    if (st.textface) {
+      tf.textContent = st.textface.text || '—';
+      const c = st.textface.rgb || [120, 200, 255];
+      tf.style.color = `rgb(${c[0]},${c[1]},${c[2]})`;
+    } else {
+      tf.textContent = '— 时钟 —';
+      tf.style.color = '';
+    }
+    if (st.current_project) {
+      document.getElementById('current_project').textContent =
+        st.current_project.alias || '—';
+    }
+
+    const ev = await (await fetch('/api/events?since=' + since)).json();
+    const table = document.getElementById('evtable');
+    for (const e of ev.events || []) {
+      const tr = table.insertRow(0);
+      tr.innerHTML = `<td class="seq">${e.seq}</td><td class="topic">${esc(e.topic)}</td>` +
+        `<td>${esc(JSON.stringify(e.payload)).slice(0, 160)}</td>`;
+    }
+    while (table.rows.length > 100) table.deleteRow(-1);
+    since = ev.latest_seq || since;
+    document.getElementById('conn').textContent = '● connected';
+  } catch (e) {
+    document.getElementById('conn').textContent = '○ disconnected';
+  }
+}
+
+async function ctl(action) {
+  await fetch('/api/ctl', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action})});
+}
+
+async function switchProject() {
+  const alias = document.getElementById('project_select').value;
+  if (!alias) return;
+  await fetch('/api/ctl', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action: 'project_switch', params: {alias}})});
+}
+
+async function loadProjects() {
+  try {
+    const d = await (await fetch('/api/projects')).json();
+    const sel = document.getElementById('project_select');
+    sel.innerHTML = '';
+    for (const p of d.projects || []) {
+      const opt = document.createElement('option');
+      opt.value = p.alias; opt.textContent = p.alias;
+      if (p.alias === d.default) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch (e) { /* not available */ }
+}
+
+async function faceSwitch(style, btn) {
+  await fetch('/api/ctl', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action: 'face_switch', params: {style}})});
+  document.getElementById('face_style_label').textContent = '← ' + style + ' (current)';
+  // highlight active style button
+  btn.parentElement.querySelectorAll('button').forEach(b => {
+    b.style.background = '#1a2838'; b.style.color = '#c0d8e8';
+  });
+  btn.style.background = '#0a3020'; btn.style.color = '#7ef0a8';
+}
+
+async function setExpr(name, btn) {
+  await fetch('/api/ctl', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action: 'set_expression', params: {expression: name}})});
+  document.querySelectorAll('.expr-row button').forEach(b =>
+    b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  document.getElementById('current_expr').textContent = 'expression: ' + name;
+}
+
+setInterval(poll, 1000);
+poll();
+loadProjects();
+
+// --- LED frame: native res canvas + CSS pixelated scaling + CSS grid overlay ---
+const ledCanvas = document.getElementById('led');
+const ledCtx = ledCanvas.getContext('2d');
+let frameCount = 0;
+
+function drawFrame(w, h, rgbBytes) {
+  const img = ledCtx.createImageData(w, h);
+  for (let i = 0, j = 0; i < rgbBytes.length; i += 3, j += 4) {
+    img.data[j]     = rgbBytes.charCodeAt(i);      // R
+    img.data[j + 1] = rgbBytes.charCodeAt(i + 1);  // G
+    img.data[j + 2] = rgbBytes.charCodeAt(i + 2);  // B
+    img.data[j + 3] = 255;
+  }
+  ledCtx.putImageData(img, 0, 0);
+
+  // color debug: sample a lit pixel near center (eye area)
+  const cx = Math.floor(w / 2);
+  const cy = Math.floor(h / 2);
+  let sample = '';
+  for (let dy = -3; dy <= 3; dy++) {
+    const idx = ((cy + dy) * w + cx) * 3;
+    if (idx >= 0 && idx < rgbBytes.length - 2) {
+      const r = rgbBytes.charCodeAt(idx);
+      const g = rgbBytes.charCodeAt(idx + 1);
+      const b = rgbBytes.charCodeAt(idx + 2);
+      if (r + g + b > 30) {
+        sample = `pixel(${cx},${cy+dy}) = rgb(${r},${g},${b})`;
+        break;
+      }
+    }
+  }
+  document.getElementById('color_debug').textContent = sample;
+}
+
+async function pollFrame() {
+  try {
+    const r = await fetch('/api/frame');
+    const d = await r.json();
+    if (d.frame && d.w > 0) {
+      drawFrame(d.w, d.h, atob(d.frame));
+      frameCount++;
+      if (frameCount % 20 === 1) {
+        document.getElementById('led_info').textContent =
+          `frame #${frameCount} · ${d.w}×${d.h} · CSS pixelated`;
+      }
+    } else {
+      document.getElementById('led_info').textContent = 'waiting for frames…';
+    }
+  } catch (e) {
+    document.getElementById('led_info').textContent = 'frame unavailable';
+  }
+}
+setInterval(pollFrame, 500);
+pollFrame();
+
+// auto-wake the face on page load (show "normal" expression, not sleepy)
+setTimeout(async () => {
+  await setExpr('normal', document.querySelector('.expr-row button'));
+}, 1000);
+// highlight wafer as default style
+setTimeout(() => {
+  const waferBtn = document.querySelector('[onclick*="faceSwitch(\'wafer\'"]');
+  if (waferBtn) {
+    waferBtn.style.background = '#0a3020';
+    waferBtn.style.color = '#7ef0a8';
+  }
+}, 200);
+</script>
+</body>
+</html>

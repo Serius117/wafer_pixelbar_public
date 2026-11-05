@@ -1,0 +1,64 @@
+# wafer-pixel OLV 实机配置模板（T0.3 demo 实测布局抽取）
+#
+# 用法：拷贝到 olv/upstream/Open-LLM-VTuber/conf.yaml 后按本机路径改 <...> 标注处。
+# 依据：T0.3 demo E2E（sensevoice ASR + sherpa melo TTS + openai_compatible LLM）
+# 说明：
+#   - 本模板是 OLV 原生路径的配置（demo/前端预览）。
+#   - 生产 P2 补丁后走 wafer Agent：LLM/ASR/TTS 由 wafer 侧注入
+#     （ASR=llama-server qwen3-asr，TTS=cosyvoice_server+engines/tts_cosyvoice.py），
+#     本文件的 asr/tts 段此时仅作为 OLV 自身回退路径存在。
+#   - 完整字段含义见 OLV 的 config_templates/conf.default.yaml。
+
+# ============ 服务器 ============
+server:
+  host: '0.0.0.0'
+  port: 12393
+
+# ============ Agent / LLM ============
+agent_config:
+  conversation_agent_choice: 'basic_memory_agent'
+  agent_settings:
+    basic_memory_agent:
+      llm_provider: 'ollama_llm'          # 生产：本地 Ollama（Qwen3.5-9B Q4）
+      faster_first_response: True
+      segment_method: 'pysbd'
+      use_mcpp: False
+
+  llm_configs:
+    # 生产：Ollama 本地 9B
+    ollama_llm:
+      base_url: 'http://localhost:11434/v1'
+      llm_api_key: 'ollama'               # Ollama 忽略 key 但字段必填
+      model: 'qwen3.5:9b'                 # 按实际 ollama list 名称改
+      temperature: 0.8
+      interrupt_method: 'user'
+
+    # demo/开发：OpenAI 兼容假服务器（T0.3 用法）
+    openai_compatible_llm:
+      base_url: 'http://127.0.0.1:18900/v1'
+      llm_api_key: 'dummy-key-for-fake-server'
+      model: 'gpt-4o'
+      temperature: 1.0
+      interrupt_method: 'user'
+
+# ============ ASR（OLV 原生路径） ============
+voice_config:
+  asr_model: 'sherpa_onnx_asr'
+  sherpa_onnx_asr:
+    model_type: 'sense_voice'
+    sense_voice: '<gpu_deploy>\models\sensevoice-onnx\model.int8.onnx'
+    tokens: '<gpu_deploy>\models\sensevoice-onnx\tokens.txt'
+    # 开发期可用 sherpa-onnx 内置 funasr 依赖；缺 itn 时按 OLV 文档补
+
+# ============ TTS（OLV 原生 demo 路径；生产走 cosyvoice_server） ============
+  tts_model: 'sherpa_onnx_tts'
+  sherpa_onnx_tts:
+    tts_model: 'vits-zh-aishell3'         # T0.3 实测的 sherpa melo 线
+    # 模型目录按 T0.3 部署位置填（melo ~182MB，家机 gpu_deploy 或本地缓存）
+
+# ============ VAD ============
+  vad:
+    model_path: '<gpu_deploy>\models\vad\silero_vad.onnx'   # 若 OLV 自带则删此行
+
+# ============ 前端 ============
+# 前端已用预构建（build 分支 pin 06a659b），无需本地 build。

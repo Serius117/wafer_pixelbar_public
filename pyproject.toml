@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wafer-pixel"
+version = "0.1.0.dev0"
+description = "Turn an EDIFIER Halo PixelBar speaker into a voice companion with a pixel face (local voice stack + cloud coding agent)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+# GPU stack (faster-whisper, cosyvoice, torch, ...) is filled in at M2/M3 cards.
+gpu = []
+# Real-device LED sink.
+pixelbar = ["hidapi>=0.14"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "engines*", "olv*", "render*", "bridge*", "ctl*", "gamedog*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

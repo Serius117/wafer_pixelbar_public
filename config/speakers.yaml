@@ -1,0 +1,21 @@
+voiceprint:
+  model: models/voiceprint/campplus_cn_common.onnx
+  embedding_dir: data/speakers
+speakers:
+  master:
+    name: 主人
+    role: admin
+    priority: 1
+    embedding: data/speakers/master.json
+  wife:
+    name: 妻子
+    role: member
+    priority: 2
+gate:
+  # Calibrated 2026-10-25 on live utterances (8 samples: 0.549-0.776) after the
+  # corpus turned out to be synthetic voices (all 0.02-0.12, unusable). t_pass
+  # 0.62 made the owner fail ~1 in 3 short turns. Synthetic non-master clips
+  # stay far below 0.2, so 0.52 keeps a wide margin; re-check with a real
+  # second speaker before lowering further.
+  t_pass: 0.52
+  t_gray: 0.45

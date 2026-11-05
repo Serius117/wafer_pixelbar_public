@@ -1,0 +1,49 @@
+# Smoke-test variant of the inference trio (TASK.DEPLOY.01, D41).
+#
+# Same ports as config/inference.yaml (OLV conf.yaml points here), but CPU
+# mode and only assets that exist on EVERY machine (dev included):
+#   - llm  : 9B gguf is a HOME-ONLY asset -> verify.py SKIPs with reason
+#            when the file is absent (TEST.DEPLOY.02 graceful degrade).
+#   - asr  : 1.7b-q4 (dev + home both have it; prod default is 0.6b -- the
+#            smoke validates the config schema + chain, not performance).
+#   - tts  : cosyvoice2-0.5b zero-shot with the committed corpus reference
+#            (ref_spk0 + its real transcript) -- voice identity is
+#            irrelevant here, only "the chain produces audio" matters.
+#
+# Run via: python scripts/verify.py smoke   (never started standalone)
+
+llama_server: llama-server.exe
+
+llm:
+  model: models/llm/Qwen3.5-9B-Q4_K_M.gguf
+  host: 127.0.0.1
+  port: 8080
+  ctx: 8192
+  n_gpu_layers: 0            # CPU (smoke)
+  extra_args: ["--reasoning", "off", "--no-webui",
+               "-ctk", "q8_0", "-ctv", "q8_0"]
+
+asr:
+  model: models/asr/qwen3-asr-1.7b-q4/Qwen3-ASR-1.7B-Q4_K_M.gguf
+  mmproj: models/asr/qwen3-asr-1.7b-q4/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf
+  alias: qwen3-asr
+  host: 127.0.0.1
+  port: 8001
+  ctx: 2048
+  n_gpu_layers: 0            # CPU (smoke)
+  extra_args: ["--no-webui"]
+
+tts:
+  provider: cosyvoice
+  python: third_party/CosyVoice/.venv/Scripts/python.exe
+  server: scripts/cosyvoice_server.py
+  model_dir: models/tts/cosyvoice2-0.5b
+  spk_id: ""
+  prompt_wav: data/prompts/reference.wav
+  prompt_text: 这是一个测试说话人日志的音频，下面我们来播放一些测试音频
+  zero_shot_spk_id: smoke_ref
+  host: 127.0.0.1
+  port: 9880
+  device: cpu               # CPU (smoke)
+  fp16: false
+  extra_args: []

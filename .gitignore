@@ -1,0 +1,51 @@
+# 一次性脚本工作区（详见 AGENTS.md 脚本执行规范）
+temp_script/
+
+# 模型/资产暂存区（跨机拷贝中转，不入库）
+modles_transfer/
+
+# OLV 上游检出（fork 本体不入库，补丁以 olv/patches/*.patch 管理）
+olv/upstream/
+
+# 第三方上游检出（CosyVoice 等；仅推理用，不入库）
+third_party/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# 密钥与环境
+.env
+credentials*.json
+# 在线供应商本地覆盖（真实端点/音色）；模板 *.example.yaml 入库
+config/providers.local.yaml
+config/*.local.yaml
+secrets/
+.playwright-mcp/
+
+# 日志与运行时数据
+logs/
+*.log
+data/
+models/
+
+# 隐私数据：声纹与对话记录永不入库（voiceprints/ 按需提供 .example）
+voiceprints/
+
+# 模拟器/渲染产物
+render_out/
+cache/
+
+# 内部开发日志/验收原文：只保留本地，不进入公开仓库
+docs/DEVLOG.md
+docs/测试结果.txt
+
+# Public snapshot: local assets not distributed
+tools/
+tests/fixtures/

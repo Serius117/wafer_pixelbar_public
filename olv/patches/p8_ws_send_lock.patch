@@ -1,0 +1,25 @@
+diff --git a/src/open_llm_vtuber/websocket_handler.py b/src/open_llm_vtuber/websocket_handler.py
+index 41368a6..bcbdd68 100644
+--- a/src/open_llm_vtuber/websocket_handler.py
++++ b/src/open_llm_vtuber/websocket_handler.py
+@@ -111,8 +111,19 @@ class WebSocketHandler:
+             Exception: If initialization fails
+         """
+         try:
++            # WAFER: serialise sends on this connection. With fast (GPU) TTS the
++            # audio task and the conversation task can call send_text
++            # concurrently, which trips websockets' legacy drain assertion
++            # ("waiter is None or waiter.cancelled()") and surfaces as
++            # "Conversation error: " in the UI.
++            _send_lock = asyncio.Lock()
++
++            async def _serialized_send(text: str) -> None:
++                async with _send_lock:
++                    await websocket.send_text(text)
++
+             session_service_context = await self._init_service_context(
+-                websocket.send_text, client_uid
++                _serialized_send, client_uid
+             )
+ 
+             await self._store_client_data(

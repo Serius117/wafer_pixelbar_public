@@ -1,0 +1,54 @@
+# Mood light = wafer's work-state indicator (D39, design doc 4.5.2).
+#
+# Text (0xE8) says what happened; the mood light (0x6B) says which stage
+# wafer is in. One state at a time -- a state change is one 0x6B write to
+# the effect's light zone (PIXELBAR_GUIDE 5.1).
+#
+# Fields per state:
+#   effect     vendor effect name (breathing/tide/solid/ripple/flow/shadow)
+#   zone       light zone 1-6 (effect slots) / 7 = master switch
+#   color      [R,G,B] for colour effects (breathing, solid); null = effect code
+#   brightness 0-100 (vendor app scale)
+#   speed      0-100; 255 = keep the stored speed
+#   hold_s     auto-return to idle after N seconds; null = stay until next event
+#
+# transition rules: task.progress -> running, task.permission -> decision,
+# task.result -> done (or failed when ok=false / error), task.cancel +
+# render.command error -> failed, mode.switch -> idle.
+
+states:
+  idle:                       # 待机/空闲：淡蓝呼吸，"心跳"
+    effect: breathing
+    zone: 1
+    color: [100, 160, 220]
+    brightness: 100
+    speed: 8
+    hold_s: null
+  running:                    # 干活中 / 中间结果：流光逐影
+    effect: flow
+    zone: 5
+    color: null
+    brightness: 100
+    speed: 255
+    hold_s: null
+  decision:                   # 待你决策：动态光影，不自动回退
+    effect: shadow
+    zone: 6
+    color: null
+    brightness: 100
+    speed: 255
+    hold_s: null
+  done:                       # 出结果：炫彩涟漪，5s 后回呼吸
+    effect: ripple
+    zone: 4
+    color: null
+    brightness: 100
+    speed: 255
+    hold_s: 5
+  failed:                     # 失败/降级：纯色静光红，10s 后回呼吸
+    effect: solid
+    zone: 3
+    color: [255, 60, 60]
+    brightness: 100
+    speed: 255
+    hold_s: 10

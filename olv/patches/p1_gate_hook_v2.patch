@@ -1,0 +1,46 @@
+diff --git a/src/open_llm_vtuber/conversations/single_conversation.py b/src/open_llm_vtuber/conversations/single_conversation.py
+index 493fa9c..4183f76 100644
+--- a/src/open_llm_vtuber/conversations/single_conversation.py
++++ b/src/open_llm_vtuber/conversations/single_conversation.py
+@@ -54,6 +54,33 @@ async def process_single_conversation(
+         await send_conversation_start_signals(websocket_send)
+         logger.info(f"New Conversation Chain {session_emoji} started!")
+ 
++        # --- WAFER P1 GATE HOOK (OLVCORE.01a, D42) ---
++        # Real voiceprint gate: CAM++ + gate policy (core/gate), pre-ASR.
++        # Returns speaker_id on pass (attached to context for P2 routing),
++        # None on drop/gray (conversation aborted, ASR never fires).
++        # Degrades to pass-through if wafer-core is not importable.
++        if isinstance(user_input, np.ndarray) and user_input.size > 0:
++            try:
++                from olv.wafer_hooks import gate_check, get_speaker_role
++                wafer_speaker = await gate_check(user_input)
++                if wafer_speaker is None:
++                    # R.21: dropped turn -- clear the client's "Thinking..."
++                    try:
++                        await websocket_send(
++                            json.dumps({"type": "control",
++                                        "text": "conversation-chain-end"})
++                        )
++                    except Exception:
++                        pass
++                    return ""  # drop/gray: ASR never fires (rule: gate pre-ASR)
++                context.wafer_speaker_id = wafer_speaker  # stamp for P2
++                context.wafer_speaker_role = get_speaker_role(wafer_speaker)
++                logger.info(
++                    f"WAFER_GATE: pass speaker={wafer_speaker} "
++                    f"role={context.wafer_speaker_role}"
++                )
++            except ImportError:
++                # wafer-core not available (vanilla upstream / CI) -- skip
++                logger.warning("WAFER_GATE: wafer_hooks not importable, skipping")
++            except Exception as gate_exc:
++                # gate internal error: fail-open (let conversation continue)
++                # -- the alternative (blocking all speech on a gate bug)
++                # is worse. rule 6 handles engine failures elsewhere.
++                logger.error("WAFER_GATE error: %s", gate_exc)
++        # --- END WAFER P1 GATE HOOK ---
++
+         # Process user input
+         input_text = await process_user_input(
+             user_input, context.asr_engine, websocket_send

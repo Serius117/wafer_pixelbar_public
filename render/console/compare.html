@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>小饼 console · 五屏表情对比</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", monospace; background: #0a0e14;
+         color: #d8e0e8; margin: 0; padding: 16px; max-width: 1660px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 4px; color: #7ef0a8; }
+  h1 a { color: #4a6a7a; text-decoration: none; font-size: 13px; margin-left: 12px; }
+  h1 a:hover { color: #7ec8ff; }
+  .sub { font-size: 12px; color: #4a6a7a; margin-bottom: 12px; }
+
+  #ctrl { position: sticky; top: 0; background: #0a0e14ee; z-index: 10;
+          padding: 6px 0 10px; border-bottom: 1px solid #1a2530; margin-bottom: 14px; }
+  #expbtns { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  button { background: #162030; color: #8ab0c0; border: 1px solid #243545;
+           border-radius: 4px; padding: 4px 11px; font-size: 12px; cursor: pointer;
+           font-family: inherit; }
+  button:hover { background: #1e3040; color: #b0d0e0; }
+  button.on { background: #0a3020; color: #7ef0a8; border-color: #2a6040; }
+  #cur { font-size: 13px; color: #7ef0a8; margin-left: 10px; }
+  #conn { font-size: 11px; color: #3a5a6a; margin-left: 12px; }
+
+  .panel { margin-bottom: 18px; }
+  .label { display: flex; justify-content: space-between; align-items: baseline;
+           margin-bottom: 5px; }
+  .label .nm { font-size: 15px; color: #d8e0e8; font-weight: 600; }
+  .label .nm .star { color: #7ef0a8; }
+  .label .cnt { font-size: 11px; color: #4a6a7a; margin-left: 8px; }
+  .label .ds { font-size: 11px; color: #567c9c; text-align: right; max-width: 55%; }
+  .screen { position: relative; background: #010409; border-radius: 8px;
+            border: 1px solid #0e1c2a; }
+  .screen canvas { display: block; }
+  .noexp { position: absolute; inset: 0; display: flex; align-items: center;
+           justify-content: center; color: #35566f; font-size: 13px;
+           background: #010409cc; border-radius: 8px; letter-spacing: 2px; }
+</style>
+</head>
+<body>
+<h1>小饼 console · 表情设计台（wafer）<a href="/">← 主控台</a></h1>
+<div class="sub">256×32 单色蓝 LED · 1bpp 阈值视角（真机观感）· 活渲染管线直出（轮询 ~150ms，眨眼/呼吸为代码原生节奏）· <b>wafer 为唯一发展风格</b>（其余四风格已冻结，可展开对比）</div>
+
+<div id="ctrl">
+  <div id="expbtns"></div>
+  <div>
+    <button id="auto" class="on">🔁 自动轮播：开</button>
+    <button id="allstyles">🎭 全部风格</button>
+    <span id="cur"></span><span id="conn">connecting…</span>
+  </div>
+</div>
+<div id="panels"></div>
+
+<script>
+// §4.5.3 slot vocabulary (D43: surprised retired -> native game scene).
+// Slot 5 = PixelBar native game scene (0xEF, no wafer art) -- not listed.
+const EXPS = [
+  ["normal","平常"],["happy","开心"],["sad","难过"],["angry","生气"],
+  ["thinking","思考 🧐"],["celebrate","庆祝 ✧"]];
+const SCALE = Math.max(3, Math.min(6, Math.floor((innerWidth - 60) / 256)));
+const W = 256, H = 32;
+
+const panelsEl = document.getElementById('panels');
+const panels = [];
+for (let i = 0; i < 5; i++) {
+  const div = document.createElement('div'); div.className = 'panel';
+  // wafer focus mode (2026-10-24): other styles hidden by default
+  if (i > 0) div.style.display = 'none';
+  div.innerHTML =
+    '<div class="label"><span><span class="nm"></span><span class="cnt"></span></span>' +
+    '<span class="ds"></span></div>' +
+    '<div class="screen"><canvas width="' + (W*SCALE) + '" height="' + (H*SCALE) +
+    '"></canvas><div class="noexp" style="display:none">此风格无此表情</div></div>';
+  panelsEl.appendChild(div);
+  const cv = div.querySelector('canvas'), cx = cv.getContext('2d');
+  // opaque background layer: solid dark + unlit dot matrix (baked once).
+  // Being fully opaque, drawing it each frame erases the previous frame
+  // completely (no ghosting from earlier lit pixels).
+  const bg = document.createElement('canvas');
+  bg.width = W * SCALE; bg.height = H * SCALE;
+  const bx = bg.getContext('2d');
+  bx.fillStyle = '#010409'; bx.fillRect(0, 0, bg.width, bg.height);
+  bx.fillStyle = '#0d1a28';
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    bx.beginPath();
+    bx.arc(x*SCALE+SCALE/2, y*SCALE+SCALE/2, SCALE*0.30, 0, 7);
+    bx.fill();
+  }
+  // lit LED sprite: SOLID single blue circle (1bpp: blue or black, nothing
+  // in between -- no gradient, no alpha, radius well inside its cell)
+  const sp = document.createElement('canvas');
+  sp.width = SCALE; sp.height = SCALE;
+  const sx = sp.getContext('2d');
+  sx.fillStyle = '#4fc3ff';
+  sx.beginPath();
+  sx.arc(SCALE/2, SCALE/2, SCALE*0.40, 0, 7);
+  sx.fill();
+  panels.push({ root: div, cv, cx, bg, sp, nm: div.querySelector('.nm'),
+    cnt: div.querySelector('.cnt'), ds: div.querySelector('.ds'),
+    noexp: div.querySelector('.noexp') });
+}
+
+// style visibility toggle (wafer focus default)
+const allBtn = document.getElementById('allstyles');
+let showAll = false;
+allBtn.onclick = () => {
+  showAll = !showAll;
+  for (let i = 1; i < panels.length; i++)
+    panels[i].root.style.display = showAll ? '' : 'none';
+  allBtn.classList.toggle('on', showAll);
+  allBtn.textContent = showAll ? '🎭 仅 wafer' : '🎭 全部风格';
+};
+
+const b64cache = new Map();
+function bytesOf(b64) {
+  let b = b64cache.get(b64);
+  if (!b) { const s = atob(b64); b = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
+    b64cache.set(b64, b); if (b64cache.size > 400) b64cache.clear(); }
+  return b;
+}
+function drawPanel(p, st) {
+  if (st.name) p.nm.textContent = st.name + (st.id === 'wafer' ? ' ★' : '');
+  if (st.desc) p.ds.textContent = st.desc;
+  if (!st.ok || !st.frame) { p.cv.style.opacity = 0.25;
+    p.noexp.style.display = 'flex'; return; }
+  p.cv.style.opacity = 1; p.noexp.style.display = 'none';
+  const b = bytesOf(st.frame);
+  p.cx.drawImage(p.bg, 0, 0);
+  for (let i = 0; i < 1024; i++) {
+    if (b[i]) {
+      const x0 = (i % 32) * 8, y = (i / 32) | 0;
+      for (let bit = 0; bit < 8; bit++)
+        if (b[i] & (1 << (7 - bit)))
+          p.cx.drawImage(p.sp, (x0 + bit) * SCALE, y * SCALE);
+    }
+  }
+}
+
+// expression buttons
+let curExp = 'normal', auto = true;
+const btnsEl = document.getElementById('expbtns'), curEl = document.getElementById('cur');
+const expBtns = {};
+for (const [id, zh] of EXPS) {
+  const b = document.createElement('button');
+  b.textContent = zh;
+  b.onclick = () => { setExp(id); autoSet(false); };
+  btnsEl.appendChild(b); expBtns[id] = b;
+}
+function setExp(id) {
+  curExp = id;
+  for (const k in expBtns) expBtns[k].classList.toggle('on', k === id);
+  curEl.textContent = '当前表情：' + EXPS.find(x => x[0] === id)[1];
+}
+const autoBtn = document.getElementById('auto');
+function autoSet(v) { auto = v;
+  autoBtn.textContent = '🔁 自动轮播：' + (v ? '开' : '关');
+  autoBtn.classList.toggle('on', v); }
+autoBtn.onclick = () => autoSet(!auto);
+setExp('normal');
+
+// poll loop (~150ms, self-scheduling to avoid pileup)
+const connEl = document.getElementById('conn');
+async function poll() {
+  const t0 = performance.now();
+  try {
+    const d = await (await fetch('/api/compare?expression=' + curExp)).json();
+    for (let i = 0; i < panels.length; i++)
+      if (panels[i].root.style.display !== 'none')
+        drawPanel(panels[i], d.styles[i]);
+    connEl.textContent = '● live · ' + d.expression;
+  } catch (e) { connEl.textContent = '○ disconnected'; }
+  setTimeout(poll, Math.max(0, 150 - (performance.now() - t0)));
+}
+poll();
+
+// auto-cycle every 3.5s
+setInterval(() => {
+  if (!auto) return;
+  const idx = EXPS.findIndex(x => x[0] === curExp);
+  setExp(EXPS[(idx + 1) % EXPS.length][0]);
+}, 3500);
+</script>
+</body>
+</html>
