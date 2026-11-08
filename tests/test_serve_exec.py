@@ -165,6 +165,9 @@ class TestServeExecutor:
         fake = FakeServe()
         monkeypatch.setattr(se, "_project_port",
                            lambda project, base=14100: fake.port)
+        # FakeServe speaks the protocol; no real opencode binary is needed.
+        monkeypatch.setattr(se, "resolve_opencode_bin",
+                           lambda: "fake-opencode")
         return fake, str(tmp_path)
 
     async def test_03_run_full_loop_with_permission(self, wired):

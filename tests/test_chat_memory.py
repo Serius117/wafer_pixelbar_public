@@ -240,8 +240,8 @@ class TestSessionPersistence:
                          "ok": True}]),
             encoding="utf-8")
 
-        # simulate a session gap
-        agent._memory_ts = 0.0
+        # simulate a session gap (monotonic may be < timeout on fresh CI)
+        agent._memory_ts = _time.monotonic() - 301.0
         await self._say(agent, "你好")
         msgs = self.llm.calls[-1]
         joined = "".join(m["content"] for m in msgs)
@@ -267,7 +267,7 @@ class TestSessionPersistence:
             encoding="utf-8")
 
         # restart: memory empty, gap triggers context load
-        agent._memory_ts = 0.0
+        agent._memory_ts = _time.monotonic() - 301.0
         agent._memory = []
         await self._say(agent, "具体说一下呢")
         msgs = self.llm.calls[-1]

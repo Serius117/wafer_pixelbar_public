@@ -44,6 +44,8 @@ def wav_duration(path: Path) -> float | None:
 
 def audio_data_uri(path: Path) -> str:
     mime = mimetypes.guess_type(path.name)[0] or "audio/wav"
+    if path.suffix.lower() == ".wav":
+        mime = "audio/wav"  # Linux mimetypes says audio/x-wav; API wants wav
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
 
