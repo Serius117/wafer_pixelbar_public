@@ -377,6 +377,73 @@ class TestConsoleCompare:
         yield bus, bridge, port
         server.shutdown()
 
+    async def test_app_shell_served(self, console) -> None:
+        """TEST.CONSOLE.06 (D62/D64): /app serves the stage shell -- OLV
+        iframe with mic permission + console iframe, both persistent,
+        width-animated stage switch with a bookmark-style edge tab."""
+        _, _, port = console
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"http://127.0.0.1:{port}/app")
+        assert r.status_code == 200
+        assert "http://127.0.0.1:12393/" in r.text, "OLV iframe src"
+        assert 'allow="microphone; autoplay"' in r.text, "mic delegation"
+        assert r.text.count('allow="microphone') >= 2, \
+            "console iframe also needs mic (level meter, CONSOLE.10)"
+        assert 'src="/"' in r.text, "console iframe src"
+        # D64 stage switch: flex views + width animation
+        assert "display: flex" in r.text, "flex views container"
+        assert "transition: width 0.5s ease" in r.text, "width animation"
+        assert "max(600px, 50%)" in r.text, "OLV pane caps at half screen"
+        assert 'body.narrow #v-chat' in r.text, "narrow-mode css"
+        assert "postMessage" not in r.text, "no OLV injection protocol"
+        assert "hidden" not in r.text.split(".views")[1].split("</style>")[0], \
+            "no hide/show toggling: switching is width-based"
+        # D64 rev4 (CONSOLE.10): bookmark-style edge tab replaces top tabs
+        assert 'class="stagetab"' in r.text, "edge tab present"
+        assert "控制台" in r.text, "edge tab label"
+        assert "writing-mode: vertical-rl" in r.text, "vertical CJK label"
+        assert 'onclick="sw()"' in r.text, "toggle handler"
+        assert 'class="tab ' not in r.text, "old top tab bar removed"
+
+    async def test_debug_services_probed(self, console) -> None:
+        """TEST.CONSOLE.07 (CORE.05): /api/debug/services returns health
+        for all six services with port and up/down status."""
+        _, _, port = console
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"http://127.0.0.1:{port}/api/debug/services")
+        assert r.status_code == 200
+        data = r.json()
+        assert "services" in data
+        for name in ("hub", "render", "llm", "asr", "tts", "olv"):
+            assert name in data["services"], f"{name} missing"
+            assert "port" in data["services"][name]
+            assert "up" in data["services"][name]
+
+    async def test_debug_vram_responds(self, console) -> None:
+        """TEST.CONSOLE.08 (CORE.05): /api/debug/vram returns either
+        VRAM data or a graceful 'not found' (no crash)."""
+        _, _, port = console
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"http://127.0.0.1:{port}/api/debug/vram")
+        assert r.status_code == 200
+        data = r.json()
+        # either has vram data or a reason (nvidia-smi absent on CI)
+        assert "vram" in data
+
+    async def test_debug_panel_in_index(self, console) -> None:
+        """TEST.CONSOLE.09 (CORE.05): index.html includes the debug
+        panel (service health badges + VRAM + event stream)."""
+        _, _, port = console
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"http://127.0.0.1:{port}/")
+        assert r.status_code == 200
+        assert "debug-panel" in r.text.lower() or "Debug Panel" in r.text
+        assert "svc-health" in r.text, "service health section"
+        assert "vram" in r.text, "VRAM section"
+        assert "debug-events" in r.text, "event stream section"
+
     async def test_compare_page_served(self, console) -> None:
         """TEST.CONSOLE.03: /compare serves the comparison page."""
         _, _, port = console
@@ -390,7 +457,7 @@ class TestConsoleCompare:
         assert "/compare" in r.text
 
     async def test_compare_returns_five_live_frames(self, console) -> None:
-        """TEST.CONSOLE.01: /api/compare renders all 5 styles live (1bpp)."""
+        """TEST.CONSOLE.01: /api/compare renders all 6 styles live (1bpp)."""
         import base64
 
         _, _, port = console
@@ -400,7 +467,7 @@ class TestConsoleCompare:
                 ).json()
         assert d["expression"] == "happy"
         assert [s["id"] for s in d["styles"]] == [
-            "wafer", "mochi", "bubble", "mech", "claw"]
+            "wafer", "mochi", "bubble", "mech", "claw", "whale"]
         frames = {}
         for s in d["styles"]:
             assert s["ok"] is True
@@ -408,8 +475,8 @@ class TestConsoleCompare:
             assert len(raw) == 1024  # 256x32 @ 1bpp
             assert any(raw)  # non-empty bitmap
             frames[s["id"]] = raw
-        # five styles genuinely differ (same expression, distinct geometry)
-        assert len({bytes(v) for v in frames.values()}) == 5
+        # six styles genuinely differ (same expression, distinct geometry)
+        assert len({bytes(v) for v in frames.values()}) == 6
         # expression switch produces a different frame
         async with httpx.AsyncClient() as client:
             d2 = (await client.get(

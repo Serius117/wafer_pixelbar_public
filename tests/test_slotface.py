@@ -227,6 +227,14 @@ class TestSlotController:
                             {"spoken": "音", "candidates": ["音乐"]})
         assert self._last_cat(sink) == CAT_THINKING
 
+    async def test_26_stop_restores_clock(self, ctrl):
+        """Exit: stop() must leave the native clock, not the last face."""
+        c, _bus, sink = ctrl
+        await c.start()
+        c._switch(CAT_HAPPY, "test")
+        c.stop()
+        assert sink.last == CAT_CLOCK
+
     def test_20_sink_report_bytes(self):
         """TEST.SLOT.20: real sink builds exact 0xEF switch reports.
 

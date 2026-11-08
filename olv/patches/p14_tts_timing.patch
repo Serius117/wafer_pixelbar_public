@@ -1,0 +1,28 @@
+diff --git a/src/open_llm_vtuber/conversations/tts_manager.py b/src/open_llm_vtuber/conversations/tts_manager.py
+--- a/src/open_llm_vtuber/conversations/tts_manager.py
++++ b/src/open_llm_vtuber/conversations/tts_manager.py
+@@ -164,6 +164,12 @@
+                         )
+                         await self._payload_queue.put(
+                             (payload, self._alloc_sequence()))
++                        if first:
++                            try:
++                                from olv.wafer_hooks import note_tts_first
++                                note_tts_first()
++                            except Exception:
++                                pass
+                         first = False
+                     if first:  # engine produced nothing -> keep the UI moving
+                         await self._send_silent_payload(
+@@ -181,6 +187,11 @@
+             )
+             # Queue the payload with its sequence number
+             await self._payload_queue.put((payload, sequence))
++            try:
++                from olv.wafer_hooks import note_tts_first
++                note_tts_first()
++            except Exception:
++                pass
+ 
+         except Exception as e:
+             logger.error(f"Error preparing audio payload: {e}")

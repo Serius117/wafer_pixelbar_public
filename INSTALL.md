@@ -52,7 +52,34 @@ Copy-Item config\providers.local.example.yaml config\providers.local.yaml
 
 公开快照不包含音频 fixture，依赖这些素材的音频回归测试不会随仓库分发。
 
-## 6. 启动
+## 6. OLV 语音页（可选，真机语音需要）
+
+公开快照不包含 OLV 上游（第三方项目，`olv/upstream/` 已排除），
+但**包含全部定制补丁**（`olv/patches/*.patch`）。语音页按以下步骤搭建：
+
+```powershell
+git clone https://github.com/Open-LLM-VTuber/Open-LLM-VTuber.git `
+    olv/upstream/Open-LLM-VTuber
+cd olv/upstream/Open-LLM-VTuber
+git checkout 992309c
+git apply ../../patches/p1_gate_hook_v2.patch
+git apply ../../patches/p2_wafer_agent.patch
+git apply ../../patches/p6_wafer_servers.patch
+git apply ../../patches/p8_ws_send_lock.patch
+git apply ../../patches/p11_tts_streaming.patch
+git apply ../../patches/p12_state_after_speech.patch
+git apply ../../patches/p13_proactive_announce.patch
+git apply ../../patches/p14_tts_timing.patch
+git apply ../../patches/p15_model_switch.patch
+cd ../../..
+```
+
+再按 OLV 上游文档创建其独立 venv（Python 3.10，`olv/upstream/
+Open-LLM-VTuber/.venv`）并安装依赖；然后运行
+`python scripts/setup_olv.py` 生成 `conf.yaml`。
+不带 OLV 时，`dev_stack.py start --no-olv` 可运行 hub/bridge/render。
+
+## 7. 启动
 
 ```powershell
 # 零硬件：hub + render console
@@ -66,6 +93,6 @@ python -m render --port 8765 --console 8790
 OLV 音频页：<http://127.0.0.1:12393/>
 LED console：<http://127.0.0.1:8790/>
 
-## 7. 隐私
+## 8. 隐私
 
 本地 VAD + CAM++ 门禁 + 本地 ASR 是默认路径；在线模式只发送已放行的文本，不发送原始音频。

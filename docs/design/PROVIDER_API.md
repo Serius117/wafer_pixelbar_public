@@ -149,4 +149,4 @@ Copy-Item config\providers.local.example.yaml config\providers.local.yaml
 
 - MiniMax：`MINIMAX_API_KEY`；确认控制台所属站点（`.cn` / `.io`）；如账号要求 `GroupId` 一并提供；确认 `Chinese_crisp_podcaster_nv1` 在所选模型（建议 `speech-2.8-hd`）下可用。
 - 云端 LLM：`base_url`、模型名、API key（DeepSeek v4.1 flash 的提供方）；也可复用本机 opencode provider。
-- ASR：不需要；保持本地 qwen3-asr。
+- ASR：不需要云端 key；保持本地 qwen3-asr。运行时可在控制台切 CPU/GPU（`asr` in `data/provider_state.json`）；GPU 需 CUDA 版 llama-server，测试数据见 DEVLOG 2026-11-08（0.6B Q8：CPU 中位 0.446s / GPU 0.250s）。

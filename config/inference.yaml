@@ -8,9 +8,11 @@
 #   ./scripts/serve_inference.py --status
 #   ./scripts/serve_inference.py --stop
 
-# Portable public default; override in config/providers.local.yaml if your CUDA
-# llama-server build lives elsewhere.
+# Portable public default; override in config/providers.local.yaml if your
+# llama-server build lives elsewhere. The optional CUDA build is preferred
+# when present (CPU mode still works via -ngl 0).
 llama_server: llama-server.exe
+llama_server_cuda: tools/llama-cuda/llama-server.exe
 
 llm:
   # local = llama-server :8080 (default); openai_compat = arbitrary cloud API.
@@ -40,7 +42,7 @@ asr:
   host: 127.0.0.1
   port: 8001
   ctx: 1024
-  n_gpu_layers: 0   # plan A: ASR on CPU (frees 1.8GB for the 9B LLM)
+  device: cpu       # cpu | gpu; console can switch at runtime
   extra_args: ["--no-webui"]
 
 # TTS -- profiles (select with tts.provider):
@@ -89,5 +91,21 @@ tts:
     group_id_env: MINIMAX_GROUP_ID
     sample_rate: 32000
     format: wav
+    timeout: 60
+    extra_args: []
+  # Qwen3-TTS flash native endpoint (voice Serena). Key: QWEN_MAAS_API_KEY.
+  # Default = whole-sentence WAV (stable playback). Realtime streaming is
+  # experimental: model=qwen3-tts-flash-realtime + ws_url below; its small
+  # PCM deltas currently produce audible gaps in OLV's per-payload player.
+  qwen_tts:
+    python: .venv/Scripts/python.exe
+    server: scripts/qwen_tts_server.py
+    model: qwen3-tts-flash
+    voice: Serena
+    endpoint: https://maas.qianwenaiapi.com/api/v1/services/aigc/multimodal-generation/generation
+    ws_url: wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/realtime
+    api_key_env: QWEN_MAAS_API_KEY
+    voice_env: QWEN_TTS_VOICE
+    sample_rate: 24000
     timeout: 60
     extra_args: []

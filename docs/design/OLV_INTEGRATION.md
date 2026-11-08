@@ -205,6 +205,7 @@ flowchart TD
 - `pending_work` 一次性：下一句无论内容强制派活后清零；超时回 standby 时一并作废（挂在 `_SessionMode` 超时语义下）；
 - **兼容**：D35「派活/开工」前缀快车道保留——work-wake 是第三条进任务路由的路（前缀/评分/唤醒词），互不排斥；
 - 门禁不变：work-wake 同样要过 CAM++（陌生人说「小饼干活」= 静默红线，零 ASR）。
+- **ASR 容错（TASK.KWS.07）**：匹配允许「小饼，干活 / 小饼 干活 / 小饼干活儿」；0.6B ASR 裸说时可能截断为「小饼。」，此情形按裸 work-wake 处理（回「好，说吧」+ `pending_work`），不再静默丢弃。若门禁在 ASR 前 drop，则仍无转写/无对话（隐私设计）。
 
 **测试**：开发机单测族 **TEST.WAKE.01~07**（TEST_DESIGN 登记）；真机验收 TEST.DEPLOY.07/08（家机，已登记）。
 

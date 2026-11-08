@@ -98,8 +98,9 @@ class TestExecutorConstruction:
         assert book_b.get("proj") is None
 
 
-@pytest.mark.skipif(shutil.which("opencode") is None and not Path(
-    "C:/Users/admin/nodejs/node_modules/opencode-ai/bin/opencode.exe").exists(),
+@pytest.mark.skipif(shutil.which("opencode") is None and not (
+    Path.home() / "nodejs/node_modules/opencode-ai/bin/opencode.exe"
+).exists(),
     reason="opencode CLI not installed")
 class TestLiveExecution:
     async def test_real_query_and_session_continuation(self, tmp_path) -> None:

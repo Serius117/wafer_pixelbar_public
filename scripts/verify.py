@@ -267,6 +267,10 @@ def _boot_olv(mgr: ServiceManager, cloud_llm: bool) -> tuple[bool, str]:
     cmd = [sys.executable, str(ROOT / "scripts" / "setup_olv.py")]
     if cloud_llm:
         cmd += ["--llm", "cloud"]
+    else:
+        # Smoke/OLV-BOOT must remain self-contained even if the user has a
+        # persisted runtime provider state (default online).
+        cmd += ["--llm", "local"]
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                        timeout=120)
     if r.returncode != 0:

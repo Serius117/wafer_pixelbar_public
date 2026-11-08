@@ -16,6 +16,7 @@ class FakeBridge:
     def __init__(self) -> None:
         self.submitted: list[tuple[str, str]] = []
         self._projects = None
+        self._recent: list[str] = []  # CORE.04: composer context
 
     def _ensure_projects(self) -> None:
         pass
@@ -71,6 +72,14 @@ class TestDualWakeRouting:
             ("帮我查一下测试文件", "master")], "wake word must be stripped"
         assert not self.llm_calls, "forced route must skip the LLM"
         assert pairs and pairs[0][0] == "收到，开工！"
+
+    async def test_03b_work_wake_punctuation(self, agent):
+        """TEST.WAKE.03b: ASR punctuation/spaces must not break work wake."""
+        pairs = await self._say(agent, "小饼，干活，帮我查一下测试文件")
+        assert agent._bridge.submitted == [
+            ("帮我查一下测试文件", "master")]
+        assert not self.llm_calls
+        assert pairs[0][0] == "收到，开工！"
 
     async def test_04_bare_work_wake_arms_pending(self, agent):
         """TEST.WAKE.04: bare 小饼干活 -> '好，说吧' + pending_work armed,

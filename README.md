@@ -17,6 +17,16 @@ wafer-pixel 是一个“物理桌面 AI”实验项目：
 - **编码派活**：说「小饼干活，帮我修一下登录报错」→ 转交 opencode 执行 → 进度/权限/结果回到语音和 LED。
 - **隐私优先**：本地门禁和本地 ASR 是默认路径；在线模式只发送已放行的文本，不发送原始音频。
 
+## 控制台一览
+
+**OLV 全屏 / 控制台收起**：小饼的 Live2D 形象与对话区。
+
+<img src="assets/screenshots/console_closed.png" alt="wafer-pixel OLV 全屏" width="100%">
+
+**展开控制台**：左侧保留对话，右侧同步 LED 时钟、会话状态、任务/权限、LLM/TTS/ASR 与 Live2D 形象切换。
+
+<img src="assets/screenshots/console_open.png" alt="wafer-pixel 控制台展开" width="100%">
+
 ## 实机效果
 
 <img src="assets/screenshots/pixelbar_celebrate.jpg" alt="PixelBar 实机庆祝表情" width="900">

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>小饼</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, "Segoe UI",
+    "Microsoft YaHei", sans-serif; background: #10141c; color: #dfe7ef; }
+  body { overflow: hidden; }
+
+  /* TASK.CONSOLE.09/10 (D64): stage layout -- OLV stays mounted
+     full-width; the console slides in from the right. The OLV pane takes
+     at most half the screen but never below the OLV desktop-layout
+     breakpoint. Both iframes stay loaded the whole time (WS / mic
+     survive). */
+  .views { position: absolute; inset: 0; display: flex; }
+  iframe { border: none; height: 100%; background: #fff; }
+  #v-chat { width: 100%; min-width: 0; transition: width 0.5s ease;
+            background: #171b21; }
+  #v-ctl { width: 0; min-width: 0; transition: width 0.5s ease;
+           background: #0a0e14; }
+  body.narrow #v-chat { width: max(600px, 50%); }
+  body.narrow #v-ctl { width: calc(100% - max(600px, 50%)); }
+
+  /* Narrow-viewport fallback: below 700px the OLV page itself unmounts
+     its chat panel (mobile breakpoint ~500px) and a 600px chat column
+     cannot fit anyway -- degrade to a full-page switch. */
+  @media (max-width: 700px) {
+    #v-chat, #v-ctl { transition: none; }
+    body.narrow #v-chat { width: 0; }
+    body.narrow #v-ctl { width: 100%; }
+  }
+
+  /* TASK.CONSOLE.10: edge tab (bookmark style) -- sits on the right edge
+     of the screen while OLV is full-screen; when the console slides in,
+     the tab rides along and docks against the console's left edge,
+     slightly overlapping the OLV pane. Vertical CJK text. */
+  .stagetab {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+    writing-mode: vertical-rl; letter-spacing: 6px;
+    padding: 20px 11px; cursor: pointer; z-index: 10;
+    font-size: 17px; font-weight: 600; color: #7ef0a8;
+    background: linear-gradient(180deg, #16222f, #1a2a3c);
+    border: 1px solid #2a6040; border-right: none;
+    border-radius: 10px 0 0 10px; user-select: none;
+    box-shadow: -2px 0 12px rgba(126, 240, 168, 0.15);
+    transition: right 0.5s ease, color 0.2s, background 0.2s, box-shadow 0.2s;
+  }
+  .stagetab:hover {
+    color: #a8ffc8; box-shadow: -4px 0 18px rgba(126, 240, 168, 0.35);
+    background: linear-gradient(180deg, #1a2a3c, #16324a);
+  }
+  .stagetab .tab-icon { font-size: 18px; margin-bottom: 8px; }
+  body.narrow .stagetab { right: calc(100% - max(600px, 50%)); }
+</style>
+</head>
+<body>
+  <div class="views">
+    <iframe id="v-chat" src="http://127.0.0.1:12393/"
+            allow="microphone; autoplay"></iframe>
+    <!-- allow=microphone: the console runs its own mic level meter
+         (CONSOLE.05 A1) via browser getUserMedia -- independent of the
+         OLV stream (arch iron rule 0: browser audio APIs only) -->
+    <iframe id="v-ctl" src="/" allow="microphone; autoplay"></iframe>
+  </div>
+  <div class="stagetab" onclick="sw()" title="展开/收起控制台"><span class="tab-icon">🛠</span>控制台</div>
+<script>
+  // D64 stage switch: animate widths (both iframes stay loaded).
+  // The OLV pane keeps its native responsive layout at every width --
+  // no injection into the OLV page (user ruling 2026-11-07).
+  function sw() {
+    document.body.classList.toggle('narrow');
+  }
+</script>
+</body>
+</html>

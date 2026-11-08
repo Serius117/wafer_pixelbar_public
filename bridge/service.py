@@ -91,6 +91,17 @@ class BridgeService:
         op = payload.get("op")
         if op == "execute":
             task = ComposedTask(**payload["task"])
+            # TASK.CORE.04 Bridge B: local anaphora resolution using the
+            # recent context from the OLV process (stays on this machine;
+            # only the resolved prompt goes to opencode, D14)
+            recent = payload.get("recent_context") or []
+            if recent:
+                resolved = self._composer._resolve_references(
+                    task.prompt, recent)
+                if resolved != task.prompt:
+                    logger.info("composer resolved reference: %r -> %r",
+                                task.prompt[:40], resolved[:60])
+                    task.prompt = resolved
             # v0.1 single-flight: one active task at a time. Cancel/amend
             # remain on their own topics; a second dispatch is rejected.
             if self._running:
@@ -132,8 +143,20 @@ class BridgeService:
             self._running.pop(task_id, None)
 
     async def _on_cancel(self, topic: str, payload: dict) -> None:
-        """Audit/log cancellation; real opencode subprocess kill lands here."""
+        """Audit/log cancellation; real opencode subprocess kill lands here.
+
+        CONSOLE.11 rev: a payload without task_id cancels everything
+        (the console's cancel button does not know task ids).
+        """
         task_id = payload.get("task_id")
+        if task_id is None:
+            for tid, running in list(self._running.items()):
+                if not running.done():
+                    running.cancel()
+                logger.info("task %s cancelled (%s)", tid,
+                            payload.get("reason"))
+            self._running.clear()
+            return
         running = self._running.pop(task_id, None)
         if running is not None and not running.done():
             running.cancel()

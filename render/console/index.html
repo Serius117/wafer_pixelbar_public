@@ -6,8 +6,8 @@
 <style>
   :root { color-scheme: dark; }
   body { font-family: "Segoe UI", "Microsoft YaHei", monospace; background: #0a0e14;
-         color: #d8e0e8; margin: 0; padding: 16px; max-width: 1200px; margin: 0 auto; }
-  h1 { font-size: 18px; margin: 0 0 12px; color: #7ef0a8; }
+         color: #d8e0e8; margin: 0; padding: 16px; }
+  h1 { font-size: 20px; margin: 0 0 12px; color: #7ef0a8; }
 
   /* LED preview strip */
   .led-strip {
@@ -31,42 +31,144 @@
   .expr-row button:hover { background: #1e3040; color: #b0d0e0; }
   .expr-row button.active { background: #0a3020; color: #7ef0a8; border-color: #2a6040; }
 
-  /* Status cards */
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  /* TASK.CONSOLE.10: mic level meter (browser getUserMedia + WebAudio;
+     arch iron rule 0: no system audio APIs) */
+  .meters { display: flex; align-items: center; gap: 10px;
+            margin-bottom: 16px; background: #121a24;
+            border: 1px solid #1e2a38; border-radius: 8px; padding: 12px 14px; }
+  .meter-label { font-size: 14px; color: #8ab0c0; flex: none;
+                 white-space: nowrap; }
+  .meter-track { flex: 1; height: 14px; background: #0a1018;
+                 border-radius: 7px; overflow: hidden; position: relative;
+                 border: 1px solid #1a2530; }
+  .meter-fill { height: 100%; width: 0%; border-radius: 7px;
+                transition: width 0.08s linear; }
+  #mic_fill { background: linear-gradient(90deg, #2a6040, #7ef0a8); }
+  .meter-db { font-size: 13px; color: #8ab0c0; width: 78px; flex: none;
+              text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* TASK.CONSOLE.11 D3: gate score gauge (0-1 track, gray/pass bands) */
+  .gauge { margin-top: 6px; }
+  .gauge-track { position: relative; height: 8px; background: #0a1018;
+                 border-radius: 4px; border: 1px solid #1a2530; }
+  .gauge-band { position: absolute; top: 0; bottom: 0; }
+  .gauge-band.gray { background: rgba(255, 210, 74, 0.25); }
+  .gauge-band.pass { background: rgba(126, 240, 168, 0.25); }
+  .gauge-dot { position: absolute; top: -3px; width: 4px; height: 12px;
+               background: #7ef0a8; border-radius: 2px;
+               box-shadow: 0 0 6px rgba(126, 240, 168, 0.8);
+               transition: left 0.3s ease; }
+  .gauge-legend { font-size: 11px; color: #5a7a8a; margin-top: 2px;
+                  display: flex; justify-content: space-between; }
+
+  /* Status cards: fixed 3x2 grid (D64 embed layout) -- auto-fit produced
+     a ragged 4+2 arrangement with an uneven second row in the half-screen
+     iframe. */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr);
           gap: 12px; margin-bottom: 16px; }
   .card { background: #121a24; border: 1px solid #1e2a38; border-radius: 8px;
           padding: 12px; }
-  .card h2 { font-size: 11px; color: #5a7a8a; margin: 0 0 8px; font-weight: normal;
-             text-transform: uppercase; letter-spacing: 1px; }
-  .big { font-size: 20px; font-weight: 600; }
+  /* rev 2026-11-07 (user feedback): 11px uppercase labels were too small
+     and machine-flavored for Chinese headers -- 14px normal-case now */
+  .card h2 { font-size: 14px; color: #7a9aaa; margin: 0 0 8px; font-weight: 600; }
+  .big { font-size: 22px; font-weight: 600; }
   .listening { color: #ffd24a; } .thinking { color: #7ec8ff; }
   .speaking { color: #7ef0a8; } .standby { color: #4a5a68; }
   .task_running { color: #c39bff; }
 
   /* Controls */
   .controls { margin-bottom: 16px; }
-  .controls button {
+  .controls button { /* font 13px -> 14px below */
     background: #1a2838; color: #c0d8e8; border: 1px solid #2a4055;
     border-radius: 6px; padding: 8px 16px; margin: 0 6px 6px 0; cursor: pointer;
-    font-size: 13px; font-family: inherit; transition: background 0.2s;
+    font-size: 14px; font-family: inherit; transition: background 0.2s;
   }
   .controls button:hover { background: #243850; }
   .controls button.danger { border-color: #5a2020; }
   .controls button.danger:hover { background: #302020; }
+  /* CONSOLE.11 rev: current-state highlight (radio-style) + toast */
+  .controls button.ctl-on { background: #0a3020; color: #7ef0a8;
+                             border-color: #2a6040; }
+  .controls button.ctl-attention { animation: ctl-blink 1.2s ease-in-out infinite; }
+  @keyframes ctl-blink {
+    0%, 100% { box-shadow: 0 0 0 rgba(255, 210, 74, 0); }
+    50% { box-shadow: 0 0 12px rgba(255, 210, 74, 0.7); }
+  }
+  .ctl-toast { font-size: 12px; color: #7ef0a8; margin-top: 6px;
+               min-height: 16px; opacity: 0; transition: opacity 0.3s; }
+  .ctl-toast.show { opacity: 1; }
+  .ctl-toast.err { color: #ff6b6b; }
 
   /* Event stream */
   #events { max-height: 300px; overflow-y: auto; background: #0a1018;
             border: 1px solid #1a2530; border-radius: 8px; padding: 8px; }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
   td { padding: 3px 8px; border-bottom: 1px solid #141e28; vertical-align: top; }
   td.topic { color: #6a9ab8; white-space: nowrap; }
   td.seq { color: #3a5a68; }
 
-  .muted { color: #3a5a68; font-size: 12px; }
+  .muted { color: #3a5a68; font-size: 13px; }
   .project-card select, .project-card input {
     background: #0a1018; color: #c0d8e8; border: 1px solid #2a4055;
     border-radius: 4px; padding: 4px 8px; font-size: 12px; font-family: inherit;
   }
+
+  /* TASK.CONSOLE.08b: right-column tabs -- often-watched panels stay on
+     top (cards + controls), optional config/monitoring go into tabs */
+  .rt-tabs { display: flex; gap: 4px; }
+  .rt-tab { padding: 7px 16px; border-radius: 6px 6px 0 0; cursor: pointer;
+            font-size: 13px; color: #8ab0c0; background: #131a24;
+            border: 1px solid #1f2733; border-bottom: none; user-select: none; }
+  .rt-tab.on { background: #16222f; color: #7ef0a8; }
+  .rt-view { border-top: 1px solid #1e2a38; padding-top: 10px; }
+  .rt-view.hidden { display: none; }
+
+  /* TASK.CONSOLE.06 B1/B2: latency panel */
+  /* B1 thermometer (user feedback rev): fixed span with a 2s red line --
+     fast turns show a short bar, slow ones a long one; comparable
+     across turns, not a bare proportion. */
+  .lat-thermo { position: relative; height: 22px; background: #0a1018;
+                border: 1px solid #1a2530; border-radius: 4px;
+                margin-top: 16px; }
+  .lat-fill { position: absolute; left: 0; top: 0; bottom: 0;
+              display: flex; width: 0%; border-radius: 3px 0 0 3px;
+              overflow: hidden; transition: width 0.4s ease; }
+  .lat-seg { height: 100%; position: relative; }
+  /* TASK.CONSOLE.13: one colour per pipeline stage. */
+  .lat-seg.asr { background: #a8641f; }
+  .lat-seg.llmfirst { background: #2a6040; }
+  .lat-seg.llmrest { background: #27766b; }
+  .lat-seg.tts { background: #2a4a6a; }
+  /* in-segment Chinese labels (hidden automatically when too narrow) */
+  .lat-seg span { position: absolute; inset: 0; display: flex;
+                  align-items: center; justify-content: center;
+                  font-size: 9px; color: rgba(255, 255, 255, 0.85);
+                  overflow: hidden; white-space: nowrap;
+                  text-overflow: clip; }
+  .lat-legend { display: flex; flex-wrap: wrap; gap: 10px;
+                margin-top: 7px; font-size: 10px; color: #6f8b99; }
+  .lat-legend i { display: inline-block; width: 8px; height: 8px;
+                  border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .lat-legend .asr { background: #a8641f; }
+  .lat-legend .llmfirst { background: #2a6040; }
+  .lat-legend .llmrest { background: #27766b; }
+  .lat-legend .tts { background: #2a4a6a; }
+  .lat-legend .first { background: #ffe66d; width: 3px; border-radius: 0;
+                       box-shadow: 0 0 3px #ffe66d; }
+  /* ruler layer: ticks with labels ABOVE the track, red warning line */
+  .lat-ruler { position: absolute; inset: 0; pointer-events: none; }
+  .lat-ruler .tick { position: absolute; top: 0; bottom: 0; width: 1px;
+                     background: rgba(255, 255, 255, 0.30); }
+  .lat-ruler .tick span { position: absolute; top: -14px; left: 50%;
+                          transform: translateX(-50%); font-size: 9px;
+                          color: #5a7a8a; white-space: nowrap; }
+  .lat-ruler .tick.red { background: #ff5a5a; width: 2px; }
+  .lat-ruler .tick.red span { color: #ff7a7a; font-weight: 600; }
+  /* first-audio marker: a thick line inside the thermometer so the
+     first frame can be compared against the 2s red line directly. */
+  .lat-first { position: absolute; top: -3px; bottom: -3px; width: 3px;
+               background: #ffe66d; box-shadow: 0 0 4px #ffe66d;
+               display: none; pointer-events: none; z-index: 3; }
 </style>
 </head>
 <body>
@@ -75,7 +177,7 @@
 
 <!-- LED Face Preview -->
 <div class="led-strip">
-  <h2>LED FACE · 256×32</h2>
+  <h2>LED 屏幕预览 · 256×32</h2>
   <div style="position:relative; display:inline-block; width:100%; max-width:1536px;">
     <canvas id="led" width="256" height="32"
       style="width:100%; aspect-ratio:256/32; image-rendering:pixelated;
@@ -103,28 +205,51 @@
     <span id="face_style_label" style="font-size:12px;color:#7ef0a8;margin-left:8px;">← wafer (default)</span>
   </div>
   <div class="expr-row" id="expr_buttons">
-    <button onclick="setExpr('normal',this)">normal</button>
-    <button onclick="setExpr('happy',this)">happy</button>
-    <button onclick="setExpr('sad',this)">sad</button>
-    <button onclick="setExpr('angry',this)">angry</button>
-    <button onclick="setExpr('surprised',this)">surprised</button>
-    <button onclick="setExpr('cute',this)">cute</button>
-    <button onclick="setExpr('tired',this)">tired</button>
-    <button onclick="setExpr('sleepy',this)">sleepy</button>
-    <button onclick="setExpr('thinking',this)">thinking</button>
-    <button onclick="setExpr('scared',this)">scared</button>
-    <button onclick="setExpr('wink',this)">wink</button>
+    <button onclick="setExpr('normal',this)">平静</button>
+    <button onclick="setExpr('happy',this)">开心</button>
+    <button onclick="setExpr('sad',this)">难过</button>
+    <button onclick="setExpr('angry',this)">生气</button>
+    <button onclick="setExpr('surprised',this)">惊讶</button>
+    <button onclick="setExpr('cute',this)">卖萌</button>
+    <button onclick="setExpr('tired',this)">累了</button>
+    <button onclick="setExpr('sleepy',this)">睡眼</button>
+    <button onclick="setExpr('thinking',this)">思考</button>
+    <button onclick="setExpr('scared',this)">害怕</button>
+    <button onclick="setExpr('wink',this)">眨眼</button>
   </div>
+</div>
+
+<!-- TASK.CONSOLE.09: console is now embed-only (D64 stage layout) --
+     stack: LED strip on top, cards/controls/tabbed panels below. The
+     transcript panel was removed: the OLV chat column (left of the
+     stage) already shows the live conversation. -->
+<div class="col-main">
+
+<!-- TASK.CONSOLE.10: mic level meter (browser audio APIs only).
+     Always visible; no permission -> empty bar + small note. -->
+<div class="meters" id="audio-meters">
+  <span class="meter-label">🎤 麦克风电平</span>
+  <div class="meter-track"><div class="meter-fill" id="mic_fill"></div></div>
+  <span class="meter-db" id="mic_db">…</span>
 </div>
 
 <!-- Status Cards -->
 <div class="grid">
-  <div class="card"><h2>Session</h2><div class="big" id="session">standby</div></div>
-  <div class="card"><h2>Mode</h2><div class="big" id="mode">normal</div></div>
-  <div class="card"><h2>Gate</h2><div class="big" id="gate">—</div></div>
-  <div class="card"><h2>Task</h2><div class="big" id="task">—</div></div>
-  <div class="card"><h2>LED Text <span style="font-size:10px;color:#5a7a8a;">(D36)</span></h2><div class="big" id="textface">—</div></div>
-  <div class="card project-card"><h2>Project</h2>
+  <div class="card"><h2>当前会话</h2><div class="big" id="session">standby</div>
+    <div class="muted" id="sleep_countdown" style="font-size:11px; margin-top:2px;"></div></div>
+  <div class="card"><h2>当前模式</h2><div class="big" id="mode">normal</div></div>
+  <div class="card"><h2>门禁最近判定</h2><div class="big" id="gate">—</div>
+    <div class="gauge" id="gate_gauge" style="display:none;">
+      <div class="gauge-track">
+        <div class="gauge-band gray" id="gauge_gray"></div>
+        <div class="gauge-band pass" id="gauge_pass"></div>
+        <div class="gauge-dot" id="gauge_dot"></div>
+      </div>
+      <div class="gauge-legend"><span id="gauge_score">—</span></div>
+    </div></div>
+  <div class="card"><h2>任务状态</h2><div class="big" id="task">—</div></div>
+  <div class="card"><h2>LED 显示文本</h2><div class="big" id="textface">—</div></div>
+  <div class="card project-card"><h2>当前项目</h2>
     <div id="current_project" class="big" style="font-size:14px">—</div>
     <div style="margin-top:6px; display:flex; gap:6px; align-items:center;">
       <select id="project_select" style="flex:1"></select>
@@ -135,38 +260,144 @@
 
 <!-- Controls -->
 <div class="card controls">
-  <h2>Controls</h2>
-  <button onclick="ctl('wake')">☀️ 唤醒</button>
-  <button onclick="ctl('sleep')">🌙 睡眠</button>
-  <button onclick="ctl('gate_toggle')">🔒 门禁</button>
-  <button onclick="ctl('mode_normal')">💼 工作</button>
-  <button onclick="ctl('mode_game')">🎮 游戏</button>
-  <button onclick="ctl('approve')">✓ 批准</button>
-  <button onclick="ctl('deny')">✗ 拒绝</button>
-  <button class="danger" onclick="ctl('task_cancel')">✕ 取消任务</button>
+  <h2>快捷控制</h2>
+  <button id="btn_wake" onclick="ctl('wake','唤醒')">☀️ 唤醒</button>
+  <button id="btn_sleep" onclick="ctl('sleep','睡眠')">🌙 睡眠</button>
+  <button id="btn_gate" onclick="ctl('gate_toggle','门禁开关')">🔒 门禁</button>
+  <button id="btn_normal" onclick="ctl('mode_normal','切到工作模式')">💼 工作</button>
+  <button id="btn_game" onclick="ctl('mode_game','切到游戏模式')">🎮 游戏</button>
+  <button id="btn_llm_provider" title="切换后重启语音服务；首次默认在线"
+          onclick="toggleProvider('llm')">🧠 LLM 在线</button>
+  <button id="btn_tts_provider" title="切换后重启语音服务；首次默认在线"
+          onclick="toggleProvider('tts')">🔊 TTS 在线</button>
+  <button id="btn_asr_device" title="切换 ASR CPU/GPU；会重启语音服务"
+          onclick="toggleProvider('asr')">🎙️ ASR CPU</button>
+  <select id="live2d_model" title="切换 Live2D 形象"
+          onchange="switchLive2DModel(this.value)"
+          style="padding:6px 8px;border-radius:6px;background:#131a24;
+                 color:#cfe8f5;border:1px solid #1f2733;">
+    <option value="">🎭 形象</option>
+    <option value="Hiyori">Hiyori</option>
+    <option value="Mao">Mao</option>
+    <option value="DeepSeek-chan">DeepSeek-chan / 大肥鱼</option>
+    <option value="whale-maid-live2d">鲸鱼女仆</option>
+  </select>
+  <button id="btn_approve" onclick="ctl('approve','批准')">✓ 批准</button>
+  <button id="btn_deny" onclick="ctl('deny','拒绝')">✗ 拒绝</button>
+  <button class="danger" onclick="ctl('task_cancel','取消任务')">✕ 取消任务</button>
+  <div id="ctl_toast" class="ctl-toast"></div>
 </div>
 
-<!-- Event Stream -->
-<div class="card">
-  <h2>Event Stream</h2>
-  <div id="events"><table id="evtable"></table></div>
-</div>
+<!-- TASK.CONSOLE.08b: right-column tabs (events default / speakers / debug) -->
+<div class="card" id="right-tabs">
+  <div class="rt-tabs">
+    <div class="rt-tab on" data-rt="events" onclick="rtSwitch('events')">📋 事件流</div>
+    <div class="rt-tab" data-rt="latency" onclick="rtSwitch('latency')">📈 延迟</div>
+    <div class="rt-tab" data-rt="speakers" onclick="rtSwitch('speakers')">👥 说话人</div>
+    <div class="rt-tab" data-rt="logs" onclick="rtSwitch('logs')">📜 日志</div>
+    <div class="rt-tab" data-rt="debug" onclick="rtSwitch('debug')">📊 调试</div>
+  </div>
+  <div class="rt-view" id="rt-events">
+    <div id="events"><table id="evtable"></table></div>
+  </div>
+  <div class="rt-view hidden" id="rt-latency">
+    <div style="margin-bottom:16px;">
+      <span style="font-size:12px;color:#5a7a8a;">最近一轮耗时</span>
+      <div id="lat_current" class="muted" style="font-size:12px;">暂无数据</div>
+      <div class="lat-thermo" id="lat_thermo" style="display:none;">
+        <div class="lat-fill" id="lat_fill">
+          <div class="lat-seg asr" id="lat_asr"><span>ASR</span></div>
+          <div class="lat-seg llmfirst" id="lat_llmfirst"><span>LLM 首字</span></div>
+          <div class="lat-seg llmrest" id="lat_llmrest"><span>LLM 生成</span></div>
+          <div class="lat-seg tts" id="lat_tts"><span>TTS 首音</span></div>
+        </div>
+        <div class="lat-first" id="lat_first" title="TTS 首帧"></div>
+        <div class="lat-ruler" id="lat_ruler"></div>
+      </div>
+      <div class="lat-legend">
+        <span><i class="asr"></i>ASR</span>
+        <span><i class="llmfirst"></i>LLM 首字</span>
+        <span><i class="llmrest"></i>LLM 生成</span>
+        <span><i class="tts"></i>TTS 首音</span>
+        <span><i class="first"></i>首帧粗线</span>
+      </div>
+    </div>
+    <div style="margin-bottom:8px;">
+      <span style="font-size:12px;color:#5a7a8a;">近 20 轮首帧延迟</span>
+      <div id="lat_stats" class="muted" style="font-size:12px;margin:2px 0 4px;">—</div>
+      <svg id="lat_spark" width="100%" height="96"></svg>
+    </div>
+    <div class="muted" style="font-size:10px;">
+      数据源：对话转录日志（DIALOG.01 + CONSOLE.13 sidecar）；分段：ASR / LLM 首字 / LLM 生成 / TTS 首音</div>
+  </div>
+  <div class="rt-view hidden" id="rt-speakers">
+  <div id="speaker_list" style="margin-bottom:14px; max-height:240px; overflow-y:auto;">
+    <table style="font-size:12px;"><tbody>
+      <tr style="color:#5a7a8a;"><td>ID</td><td>名称</td><td>角色</td><td>优先级</td><td>声纹</td><td>操作</td></tr>
+    </tbody></table>
+  </div>
+
+  <div style="border-top:1px solid #1a2530; padding-top:12px;">
+    <span style="font-size:12px;color:#5a7a8a;">添加 / 重新注册说话人</span>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center;">
+      <input id="spk_id" placeholder="id（小写字母数字）" style="width:130px;">
+      <input id="spk_name" placeholder="显示名称" style="width:100px;">
+      <select id="spk_role">
+        <option value="member">member（仅聊天）</option>
+        <option value="admin">admin（全权限）</option>
+      </select>
+      <input id="spk_priority" type="number" value="99" min="1" style="width:60px;" title="数字越小越优先">
+      <label style="font-size:12px;color:#5a7a8a;"><input type="checkbox" id="spk_overwrite"> 覆盖已有</label>
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; align-items:center;">
+      <button id="spk_record_btn" onclick="spkRecordAll()">🎙️ 开始录音（3 段 × 5 秒）</button>
+      <span id="spk_record_status" style="font-size:12px;color:#8ab0c0;">尚未录音</span>
+    </div>
+    <div style="margin-top:10px;">
+      <button id="spk_submit_btn" onclick="spkSubmit()" disabled>✓ 注册声纹</button>
+      <span id="spk_result" style="font-size:12px;"></span>
+    </div>
+  </div>
+</div><!-- /rt-speakers -->
 
 <script>
 let since = 0;
 function esc(s) { return String(s).replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+// TASK.CONSOLE.11: Chinese labels for machine-facing values (user
+// feedback: no bare English/abbreviations on the panel)
+const ZH = {
+  session: {standby: '待机', listening: '在听', thinking: '思考',
+            speaking: '说话', pending: '等待'},
+  mode: {normal: '工作', game: '游戏', off: '关闭'},
+  verdict: {pass: '通过', gray: '灰区', drop: '拒绝'},
+  phase: {dispatched: '已派发', running: '运行中', permission: '待决策',
+          clarify: '待澄清', done: '完成', failed: '失败'},
+  topic: {
+    'session.state': '会话状态', 'gate.decision': '门禁判定',
+    'wake.word': '唤醒命中', 'wake.status': '唤醒状态',
+    'llm.emotion': '情绪', 'mode.switch': '模式切换',
+    'task.request': '任务派发', 'task.progress': '任务进度',
+    'task.result': '任务结果', 'task.permission': '权限请求',
+    'task.clarify': '澄清', 'task.cancel': '任务取消',
+    'task.approve': '权限答复', 'ctl.hotkey': '控制指令',
+    'system.notify': '系统通知', 'project.switch': '项目切换',
+    'face.switch': '表情切换', 'audio.state': '音频段',
+    'tts.amplitude': 'TTS 电平'},
+};
+const zh = (kind, v) => (ZH[kind] && ZH[kind][v]) || v || '—';
+
 async function poll() {
   try {
     const st = await (await fetch('/api/state')).json();
-    document.getElementById('session').textContent = st.session_state || '—';
+    document.getElementById('session').textContent = zh('session', st.session_state);
     document.getElementById('session').className = 'big ' + (st.session_state || '');
-    document.getElementById('mode').textContent = st.mode || '—';
+    document.getElementById('mode').textContent = zh('mode', st.mode);
     document.getElementById('gate').textContent =
-      st.gate ? `${st.gate.verdict}${st.gate.speaker_id ? ' · ' + st.gate.speaker_id : ''}` : '—';
+      st.gate ? `${zh('verdict', st.gate.verdict)}${st.gate.speaker_id ? ' · ' + st.gate.speaker_id : ''}` : '—';
     document.getElementById('task').textContent =
-      st.task ? (st.task.done || st.task.phase || '…') : '—';
+      st.task ? zh('phase', st.task.done || st.task.phase || '…') : '—';
     const tf = document.getElementById('textface');
     if (st.textface) {
       tf.textContent = st.textface.text || '—';
@@ -185,22 +416,218 @@ async function poll() {
     const table = document.getElementById('evtable');
     for (const e of ev.events || []) {
       const tr = table.insertRow(0);
-      tr.innerHTML = `<td class="seq">${e.seq}</td><td class="topic">${esc(e.topic)}</td>` +
+      const zhTopic = ZH.topic[e.topic];
+      tr.innerHTML = `<td class="seq">${e.seq}</td>` +
+        `<td class="topic">${esc(e.topic)}${zhTopic ? `<div style="font-size:10px;color:#5a7a8a;">${zhTopic}</div>` : ''}</td>` +
         `<td>${esc(JSON.stringify(e.payload)).slice(0, 160)}</td>`;
     }
     while (table.rows.length > 100) table.deleteRow(-1);
     since = ev.latest_seq || since;
     document.getElementById('conn').textContent = '● connected';
+
+    // CONSOLE.11 D3: gate score gauge with threshold bands
+    const gauge = document.getElementById('gate_gauge');
+    if (st.gate && typeof st.gate.score === 'number') {
+      gauge.style.display = '';
+      const th = st.gate_thresholds || {t_pass: 0.52, t_gray: 0.45};
+      document.getElementById('gauge_gray').style.left = '0';
+      document.getElementById('gauge_gray').style.width = (th.t_pass * 100) + '%';
+      const passEl = document.getElementById('gauge_pass');
+      passEl.style.left = (th.t_pass * 100) + '%';
+      passEl.style.width = ((1 - th.t_pass) * 100) + '%';
+      const dot = document.getElementById('gauge_dot');
+      dot.style.left = `calc(${Math.min(1, Math.max(0, st.gate.score)) * 100}% - 2px)`;
+      dot.style.background = st.gate.score >= th.t_pass ? '#7ef0a8'
+        : (st.gate.score >= th.t_gray ? '#ffd24a' : '#ff6b6b');
+      document.getElementById('gauge_score').textContent =
+        `得分 ${st.gate.score.toFixed(3)} ｜ 灰线 ${th.t_gray} ｜ 通过线 ${th.t_pass}`;
+    } else {
+      gauge.style.display = 'none';
+    }
+
+    // CONSOLE.11 A2: wake status line
+    const ws = st.wake_status;
+    const wsEl = document.getElementById('wake-state');
+    if (!ws) {
+      wsEl.textContent = '待机（未收到状态）';
+    } else if (ws.state === 'standby_drop') {
+      wsEl.textContent = `ASR 监听中 · 最近转写「${ws.detail || ''}」未命中`;
+      wsEl.style.color = '#5a7a8a';
+    } else if (ws.state === 'wake_hit') {
+      wsEl.textContent = `唤醒命中（${ws.mode} 模式）`;
+      wsEl.style.color = '#7ef0a8';
+    } else {
+      wsEl.textContent = ws.state;
+      wsEl.style.color = '#8ab0c0';
+    }
+
+    // CONSOLE.11 D4: back-to-standby countdown. timeout_s rides on
+    // session.state (wafer_hooks), last_event_t is the activity anchor.
+    if (st.session_state === 'listening' && st.timeout_s && st.last_event_t) {
+      window._wafer_timeout_s = st.timeout_s;
+      window._wafer_last_active = st.last_event_t;
+    }
+    tickCountdown(st.session_state);
+    updateCtlButtons(st);
+    updateProviderButtons(st);
   } catch (e) {
     document.getElementById('conn').textContent = '○ disconnected';
   }
 }
 
-async function ctl(action) {
-  await fetch('/api/ctl', {method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({action})});
+async function ctl(action, label) {
+  // CONSOLE.11 rev: visible feedback -- toast + failure surfacing
+  const toast = document.getElementById('ctl_toast');
+  try {
+    const r = await fetch('/api/ctl', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action})});
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      toast.textContent = '✓ 已执行：' + (label || action);
+      toast.className = 'ctl-toast show';
+    } else {
+      toast.textContent = '✗ 未知指令：' + action;
+      toast.className = 'ctl-toast show err';
+    }
+  } catch (e) {
+    toast.textContent = '✗ 发送失败：' + e.message;
+    toast.className = 'ctl-toast show err';
+  }
+  clearTimeout(window._ctl_toast_timer);
+  window._ctl_toast_timer = setTimeout(() => {
+    toast.className = 'ctl-toast';
+  }, 2500);
 }
+
+// CONSOLE.11 rev: reflect the current state onto the quick-control
+// buttons (radio-style highlight) so "what is it right now" is visible.
+function updateCtlButtons(st) {
+  const on = (id, yes) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('ctl-on', !!yes);
+  };
+  on('btn_wake', st.session_state === 'standby');
+  on('btn_sleep', st.session_state && st.session_state !== 'standby');
+  on('btn_normal', st.mode === 'normal');
+  on('btn_game', st.mode === 'game');
+  const gateEl = document.getElementById('btn_gate');
+  if (gateEl) {
+    const enabled = st.gate_enabled !== false;  // null (unknown) -> on
+    gateEl.classList.toggle('ctl-on', enabled);
+    gateEl.textContent = enabled ? '🔒 门禁 开' : '🔓 门禁 关';
+  }
+  const pending = st.task && st.task.phase === 'permission';
+  on('btn_approve', pending);
+  on('btn_deny', pending);
+  document.getElementById('btn_approve').classList.toggle(
+    'ctl-attention', !!pending);
+}
+
+function updateProviderButtons(st) {
+  const p = st.providers || {llm: 'online', tts: 'online', asr: 'cpu'};
+  window._providerState = p;
+  const set = (id, label, mode) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const online = mode === 'online';
+    el.textContent = `${label} ${online ? '在线' : '本地'}`;
+    el.classList.toggle('ctl-on', online);
+    el.title = online ? '当前在线；点击切到本地并加载本地模型'
+      : '当前本地；点击切到在线并卸载本地模型';
+  };
+  set('btn_llm_provider', '🧠 LLM', p.llm);
+  set('btn_tts_provider', '🔊 TTS', p.tts);
+  const asrEl = document.getElementById('btn_asr_device');
+  if (asrEl) {
+    const gpu = p.asr === 'gpu';
+    asrEl.textContent = `🎙️ ASR ${gpu ? 'GPU' : 'CPU'}`;
+    asrEl.classList.toggle('ctl-on', gpu);
+    asrEl.title = gpu ? '当前 GPU；点击切到 CPU' : '当前 CPU；点击切到 GPU';
+  }
+}
+
+const PROVIDER_MODES = {
+  llm: ['online', 'local'],
+  tts: ['online', 'local'],
+  asr: ['cpu', 'gpu'],
+};
+
+async function toggleProvider(kind) {
+  const toast = document.getElementById('ctl_toast');
+  const modes = PROVIDER_MODES[kind] || ['online', 'local'];
+  const cur = (window._providerState || {})[kind] || modes[0];
+  const next = cur === modes[0] ? modes[1] : modes[0];
+  const label = kind === 'asr' ? next.toUpperCase()
+    : (next === 'online' ? '在线' : '本地');
+  toast.textContent = kind === 'asr'
+    ? '切换中，只重启 ASR 服务…' : '切换中，语音服务会重启…';
+  toast.className = 'ctl-toast show';
+  try {
+    const r = await fetch('/api/providers', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({[kind]: next}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || 'switch failed');
+    toast.textContent = `${kind.toUpperCase()} 已切到${label}，等待服务重载…`;
+    toast.className = 'ctl-toast show';
+  } catch (e) {
+    toast.textContent = '切换失败：' + e.message;
+    toast.className = 'ctl-toast show err';
+  }
+  clearTimeout(window._ctl_toast_timer);
+  window._ctl_toast_timer = setTimeout(() => {
+    toast.className = 'ctl-toast';
+  }, 3500);
+}
+
+async function switchLive2DModel(name) {
+  if (!name) return;
+  const toast = document.getElementById('ctl_toast');
+  const select = document.getElementById('live2d_model');
+  toast.textContent = `切换形象：${name}…`;
+  toast.className = 'ctl-toast show';
+  try {
+    const r = await fetch('/api/live2d-model', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model: name}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || d.detail || 'switch failed');
+    toast.textContent = `形象已切到 ${name}`;
+    toast.className = 'ctl-toast show';
+    if (select) select.value = name;
+  } catch (e) {
+    toast.textContent = '形象切换失败：' + e.message;
+    toast.className = 'ctl-toast show err';
+  }
+  clearTimeout(window._ctl_toast_timer);
+  window._ctl_toast_timer = setTimeout(() => {
+    toast.className = 'ctl-toast';
+  }, 3500);
+}
+
+// CONSOLE.11 D4: back-to-standby countdown, ticking every second
+let _cd_state = 'standby';
+function tickCountdown(state) { _cd_state = state; tickCountdownCurrent(); }
+function tickCountdownCurrent() {
+  const el = document.getElementById('sleep_countdown');
+  if (!el) return;
+  if (_cd_state !== 'listening' || !window._wafer_timeout_s
+      || !window._wafer_last_active) {
+    el.textContent = '';
+    return;
+  }
+  const remain = window._wafer_timeout_s
+    - (Date.now() / 1000 - window._wafer_last_active);
+  if (remain <= 0) { el.textContent = '回睡中…'; return; }
+  const m = Math.floor(remain / 60), s = Math.floor(remain % 60);
+  el.textContent = `回睡还有 ${m}:${String(s).padStart(2, '0')}`;
+}
+setInterval(tickCountdownCurrent, 1000);
 
 async function switchProject() {
   const alias = document.getElementById('project_select').value;
@@ -317,6 +744,599 @@ setTimeout(() => {
     waferBtn.style.color = '#7ef0a8';
   }
 }, 200);
+</script>
+
+<!-- TASK.CONSOLE.11 rev: log viewer (fifth tab) -->
+<div class="rt-view hidden" id="rt-logs">
+  <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+    <span style="font-size:12px;color:#5a7a8a;">日志源：</span>
+    <select id="log_source" onchange="logSourceChanged()">
+      <option value="olv">OLV 服务</option>
+      <option value="bridge">编码桥</option>
+      <option value="render">渲染</option>
+      <option value="hub">总线</option>
+      <option value="llm">LLM 推理</option>
+      <option value="asr">ASR 推理</option>
+      <option value="tts">TTS 推理</option>
+    </select>
+    <span class="muted" id="log_meta" style="font-size:11px;"></span>
+  </div>
+  <div id="log_view" style="font-size:11px;color:#8ab0c0;max-height:340px;
+       overflow-y:auto;background:#0d1117;border:1px solid #1a2530;
+       border-radius:4px;padding:8px;font-family:Consolas,monospace;
+       white-space:pre-wrap;word-break:break-all;">选择日志源后加载…</div>
+</div>
+
+<!-- TASK.CONSOLE.05/08b: Debug view (right-column tab) -->
+<div class="rt-view hidden" id="rt-debug">
+  <div id="debug-panel">
+
+  <!-- CONSOLE.11 A2: wake status indicator -->
+  <div id="wake-status" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px;">
+    <span style="font-size:12px;color:#4a6a7a;">唤醒状态：</span>
+    <span id="wake-state" style="font-size:12px;color:#8ab0c0;">待机（未收到状态）</span>
+  </div>
+
+  <!-- C1: Service Health -->
+  <div id="svc-health" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+    <span style="font-size:12px;color:#4a6a7a;width:100%;">服务健康（六点探活）</span>
+  </div>
+
+  <!-- C2: VRAM -->
+  <div id="vram" style="font-size:12px;color:#8ab0c0;margin-bottom:12px;">
+    <span style="color:#4a6a7a;font-size:11px;">显存占用：</span>
+    <span id="vram-value" style="color:#7ef0a8;">loading…</span>
+  </div>
+
+  <!-- D2: Event stream with timestamps -->
+  <div style="margin-bottom:8px;">
+    <span style="font-size:12px;color:#4a6a7a;">事件流（最新 10 条，含中文注解）</span>
+    <div id="debug-events" style="font-size:11px;color:#6a8a9a;max-height:200px;
+         overflow-y:auto;background:#0d1117;border:1px solid #1a2530;
+         border-radius:4px;padding:8px;font-family:monospace;"></div>
+  </div>
+  </div>
+</div><!-- /rt-debug -->
+</div><!-- /right-tabs -->
+
+</div><!-- /col-main -->
+
+<script>
+// TASK.CONSOLE.05: debug panel data fetchers
+(function() {
+  function fetchDebug() {
+    fetch('/api/debug/services')
+      .then(r => r.json())
+      .then(data => {
+        const el = document.getElementById('svc-health');
+        // remove old service badges
+        el.querySelectorAll('.svc-badge').forEach(b => b.remove());
+        for (const [name, info] of Object.entries(data.services)) {
+          const badge = document.createElement('span');
+          badge.className = 'svc-badge';
+          badge.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:3px;' +
+            'border:1px solid ' + (info.up ? '#2a6040' : '#602020') + ';' +
+            'color:' + (info.up ? '#7ef0a8' : '#ff6b6b') + ';' +
+            'background:' + (info.up ? '#0a3020' : '#301010') + ';';
+          badge.textContent = name + ' :' + info.port + (info.up ? ' ✓' : ' ✗');
+          el.appendChild(badge);
+        }
+      })
+      .catch(() => {});
+
+    fetch('/api/debug/vram')
+      .then(r => r.json())
+      .then(data => {
+        const el = document.getElementById('vram-value');
+        if (data.vram) {
+          el.textContent = data.vram.used_mb + ' / ' + data.vram.total_mb + ' MB';
+        } else {
+          el.textContent = 'N/A';
+        }
+      })
+      .catch(() => {});
+  }
+
+  function fetchEvents() {
+    fetch('/api/events?since=0')
+      .then(r => r.json())
+      .then(data => {
+        const el = document.getElementById('debug-events');
+        const events = (data.events || []).slice(-10).reverse();
+        el.innerHTML = events.map(ev => {
+          const ts = new Date(ev.t * 1000).toLocaleTimeString();
+          return '<div style="color:#4a6a7a">' + ts + '</div>' +
+                 '<div style="margin-left:12px;color:#8ab0c0">' +
+                 ev.topic + '</div>';
+        }).join('');
+      })
+      .catch(() => {});
+  }
+
+  fetchDebug();
+  fetchEvents();
+  setInterval(fetchDebug, 5000);
+  setInterval(fetchEvents, 2000);
+})();
+</script>
+
+<script>
+// TASK.CONSOLE.07: speaker management (list / record / enroll / delete)
+(function() {
+  const CLIPS = 3, SECONDS = 5, TARGET_RATE = 16000;
+  let samples = [];      // base64 PCM clips collected this session
+
+  function $(id) { return document.getElementById(id); }
+
+  function bufToB64(buf) {
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    const CH = 0x8000;  // avoid call-stack overflow on big buffers
+    for (let i = 0; i < bytes.length; i += CH) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    }
+    return btoa(bin);
+  }
+
+  async function recordClip(onTick) {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {echoCancellation: false, noiseSuppression: false}
+    });
+    const ctx = new AudioContext();
+    const srcRate = ctx.sampleRate;
+    const source = ctx.createMediaStreamSource(stream);
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    const chunks = [];
+    processor.onaudioprocess = e =>
+      chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    source.connect(processor);
+    processor.connect(ctx.destination);
+    const startT = performance.now();
+    await new Promise(resolve => {
+      const iv = setInterval(() => {
+        const remain = SECONDS - (performance.now() - startT) / 1000;
+        onTick(Math.max(0, remain));
+        if (remain <= 0) { clearInterval(iv); resolve(); }
+      }, 100);
+    });
+    processor.disconnect(); source.disconnect();
+    stream.getTracks().forEach(t => t.stop());
+    await ctx.close();
+
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const all = new Float32Array(total);
+    let off = 0;
+    for (const c of chunks) { all.set(c, off); off += c.length; }
+
+    // downsample srcRate -> 16k, float -> int16
+    const nOut = Math.round(all.length * TARGET_RATE / srcRate);
+    const out = new Int16Array(nOut);
+    for (let i = 0; i < nOut; i++) {
+      const x = i * srcRate / TARGET_RATE;
+      const i0 = Math.floor(x), i1 = Math.min(i0 + 1, all.length - 1);
+      const v = all[i0] + (all[i1] - all[i0]) * (x - i0);
+      out[i] = Math.max(-1, Math.min(1, v)) * 32767;
+    }
+    // level check (same guard as enroll.py: rms < 0.003 -> refuse)
+    let sq = 0;
+    for (let i = 0; i < all.length; i++) sq += all[i] * all[i];
+    const rms = all.length ? Math.sqrt(sq / all.length) : 0;
+    return {b64: bufToB64(out.buffer), rms, seconds: all.length / srcRate};
+  }
+
+  async function spkRecordAll() {
+    const btn = $('spk_record_btn'), status = $('spk_record_status');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      status.textContent = '此浏览器不支持麦克风录音';
+      status.style.color = '#ff6b6b';
+      return;
+    }
+    samples = [];
+    $('spk_submit_btn').disabled = true;
+    btn.disabled = true;
+    try {
+      for (let i = 1; i <= CLIPS; i++) {
+        status.style.color = '#ffd24a';
+        status.textContent = `第 ${i}/${CLIPS} 段：现在可以开始说话了……`;
+        await new Promise(r => setTimeout(r, 800));  // take a breath
+        const clip = await recordClip(remain => {
+          status.textContent =
+            `第 ${i}/${CLIPS} 段录音中……还剩 ${remain.toFixed(1)} 秒`;
+        });
+        if (clip.rms < 0.003) {
+          status.style.color = '#ff6b6b';
+          status.textContent =
+            `第 ${i} 段几乎静音，已丢弃；请检查麦克风后重试`;
+          samples = [];
+          $('spk_submit_btn').disabled = true;
+          btn.disabled = false;
+          return;
+        }
+        const db = 20 * Math.log10(clip.rms + 1e-12);
+        samples.push(clip.b64);
+        status.style.color = '#7ef0a8';
+        status.textContent =
+          `第 ${i}/${CLIPS} 段完成（${clip.seconds.toFixed(1)}s，${db.toFixed(1)} dBFS）`;
+      }
+      status.textContent = `录音完成：${CLIPS} 段已就绪，可以注册了`;
+      $('spk_submit_btn').disabled = false;
+    } catch (e) {
+      status.style.color = '#ff6b6b';
+      status.textContent = '录音失败：' + e.message + '（需要 localhost + 麦克风权限）';
+    }
+    btn.disabled = false;
+  }
+
+  async function spkSubmit() {
+    const btn = $('spk_submit_btn'), result = $('spk_result');
+    const speakerId = $('spk_id').value.trim();
+    const name = $('spk_name').value.trim();
+    if (!speakerId || !name) {
+      result.style.color = '#ff6b6b';
+      result.textContent = '请先填写 id 和显示名称';
+      return;
+    }
+    btn.disabled = true;
+    result.style.color = '#8ab0c0';
+    result.textContent = '正在提取声纹……（首次加载模型约需数秒）';
+    try {
+      const r = await fetch('/api/speakers', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          speaker_id: speakerId, name: name,
+          role: $('spk_role').value,
+          priority: parseInt($('spk_priority').value, 10) || 99,
+          overwrite: $('spk_overwrite').checked,
+          samples: samples,
+        })
+      });
+      const data = await r.json();
+      if (r.ok && data.ok) {
+        result.style.color = '#7ef0a8';
+        result.textContent = '✓ ' + data.note;
+        samples = [];
+        $('spk_submit_btn').disabled = true;
+        $('spk_record_status').textContent = '尚未录音';
+        fetchSpeakers();
+      } else {
+        result.style.color = '#ff6b6b';
+        result.textContent = '✗ ' + (data.error || '注册失败');
+      }
+    } catch (e) {
+      result.style.color = '#ff6b6b';
+      result.textContent = '✗ 请求失败：' + e.message;
+    }
+    btn.disabled = false;
+  }
+
+  async function spkDelete(id) {
+    if (!confirm(`确定删除说话人「${id}」？声纹与配置将一并移除。`)) return;
+    const r = await fetch('/api/speakers/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({speaker_id: id})
+    });
+    const data = await r.json();
+    if (r.ok && data.ok) {
+      alert('已删除。' + data.note);
+      fetchSpeakers();
+    } else {
+      alert('删除失败：' + (data.error || '未知错误'));
+    }
+  }
+
+  async function fetchSpeakers() {
+    try {
+      const r = await fetch('/api/speakers');
+      const data = await r.json();
+      const el = $('speaker_list');
+      if (!data.speakers) {
+        el.innerHTML = '<span style="color:#ff6b6b;font-size:12px;">' +
+          (data.error || '读取失败') + '</span>';
+        return;
+      }
+      let html = '<table style="font-size:12px;"><tbody>' +
+        '<tr style="color:#5a7a8a;"><td>ID</td><td>名称</td><td>角色</td>' +
+        '<td>优先级</td><td>声纹</td><td>操作</td></tr>';
+      for (const s of data.speakers) {
+        html += `<tr>
+          <td style="color:#8ab0c0;">${esc(s.speaker_id)}</td>
+          <td>${esc(s.name)}</td>
+          <td style="color:${s.role === 'admin' ? '#ffd24a' : '#8ab0c0'};">${esc(s.role)}</td>
+          <td>${s.priority}</td>
+          <td style="color:${s.enrolled ? '#7ef0a8' : '#5a7a8a'};">${s.enrolled ? '✓ 已注册' : '✗ 未注册'}</td>
+          <td><button style="background:#301010;color:#ff6b6b;border:1px solid #5a2020;
+            border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;"
+            onclick="spkDelete('${esc(s.speaker_id)}')">删除</button></td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      if (data.orphaned && data.orphaned.length) {
+        html += '<div style="font-size:12px;color:#5a7a8a;margin-top:4px;">' +
+          '有声纹但不在配置中的 id：' + esc(data.orphaned.join('、')) + '</div>';
+      }
+      el.innerHTML = html;
+    } catch (e) {
+      $('speaker_list').innerHTML =
+        '<span style="color:#ff6b6b;font-size:12px;">读取失败：' + e.message + '</span>';
+    }
+  }
+
+  window.spkRecordAll = spkRecordAll;
+  window.spkSubmit = spkSubmit;
+  window.spkDelete = spkDelete;
+  fetchSpeakers();
+  setInterval(fetchSpeakers, 15000);
+})();
+</script>
+
+<script>
+// TASK.CONSOLE.08b: right-column tab switch (events / speakers / debug)
+function rtSwitch(which) {
+  document.querySelectorAll('.rt-tab').forEach(t =>
+    t.classList.toggle('on', t.dataset.rt === which));
+  document.querySelectorAll('.rt-view').forEach(v =>
+    v.classList.toggle('hidden', v.id !== 'rt-' + which));
+}
+
+// TASK.CONSOLE.11 rev: live log tail (whitelisted sources via /api/logs)
+let _log_name = 'olv';
+let _log_last_total = -1;
+function logSourceChanged() {
+  _log_name = document.getElementById('log_source').value;
+  _log_last_total = -1;
+  fetchLogs(true);
+}
+async function fetchLogs(force) {
+  try {
+    const r = await fetch('/api/logs?name=' + _log_name + '&lines=150');
+    const d = await r.json();
+    const view = document.getElementById('log_view');
+    const meta = document.getElementById('log_meta');
+    if (d.error) {
+      view.textContent = '✗ ' + d.error;
+      meta.textContent = '';
+      return;
+    }
+    meta.textContent = d.note || `共 ${d.total || 0} 行 · 显示尾部 ${(d.lines || []).length} 行`;
+    if (!force && (d.total === _log_last_total)) return;  // no new lines
+    _log_last_total = d.total;
+    const nearBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
+    view.textContent = (d.lines || []).join('\n') || '（空日志）';
+    if (nearBottom) view.scrollTop = view.scrollHeight;
+  } catch (e) { /* keep old */ }
+}
+setInterval(() => fetchLogs(false), 3000);
+</script>
+
+<script>
+// TASK.CONSOLE.10 (CONSOLE.05 A1): mic level meter.
+// Browser APIs only (getUserMedia + WebAudio AnalyserNode) -- arch iron
+// rule 0; never touch system audio APIs directly. Independent stream:
+// the OLV iframe keeps its own capture untouched.
+(function() {
+  const fill = document.getElementById('mic_fill');
+  const dbEl = document.getElementById('mic_db');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    dbEl.textContent = '不支持';
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({audio: true}).then(stream => {
+    const ctx = new AudioContext();
+    const analyzer = ctx.createAnalyser();
+    analyzer.fftSize = 512;
+    ctx.createMediaStreamSource(stream).connect(analyzer);
+    const buf = new Float32Array(analyzer.fftSize);
+    (function tick() {
+      analyzer.getFloatTimeDomainData(buf);
+      let peak = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = Math.abs(buf[i]);
+        if (v > peak) peak = v;
+      }
+      const db = 20 * Math.log10(peak + 1e-12);
+      // map -60..0 dBFS to 0..100%
+      fill.style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + '%';
+      dbEl.textContent = db > -58 ? db.toFixed(0) + ' dBFS' : '静音';
+      requestAnimationFrame(tick);
+    })();
+  }).catch(err => {
+    dbEl.textContent = '无权限';
+    fill.style.width = '0%';
+  });
+})();
+</script>
+<script>
+// TASK.CONSOLE.06 B1/B2 (simplified): latency panel fed by the DIALOG.01
+// transcript log -- no OLV fork needed; stats use first-audio latency.
+// Rev2 2026-11-07 (user feedback): thermometer turn bar (fixed 3s span +
+// 2s red line, comparable across turns) and a y-axis on the sparkline.
+(function() {
+  const TARGET_MS = 2000;
+  const SPAN_DEFAULT = 3000;  // thermometer range
+
+  function fmtMs(v) {
+    return v >= 1000 ? (v / 1000).toFixed(v % 1000 ? 1 : 0) + 's' : String(v);
+  }
+
+  function niceStep(max) {
+    for (const s of [100, 250, 500, 1000, 2000, 5000]) {
+      if (max / s <= 4) return s;
+    }
+    return 10000;
+  }
+
+  // B1: thermometer -- full track = span (>= 3s, grows if a turn exceeds
+  // it); the fill length is proportional to the turn's total so fast and
+  // slow turns are visually comparable; 2s red line is the healthy bound;
+  // only the EXCEEDED part past the red line is tinted red.
+  function stageValues(lat) {
+    const asr = Math.max(0, Number(lat.asr) || 0);
+    const llmFirst = Math.max(0, Number(lat.llm_first) || 0);
+    const llmTotal = Math.max(0, Number(lat.llm) || 0);
+    return {
+      asr: asr,
+      llmFirst: llmFirst,
+      llmRest: Math.max(0, llmTotal - llmFirst),
+      tts: Math.max(0, Number(lat.tts) || 0),
+      sum: asr + llmTotal + Math.max(0, Number(lat.tts) || 0),
+    };
+  }
+
+  // Standard latency = wall-clock to the first TTS audio frame, i.e.
+  // ASR + full LLM generation + TTS first-audio wait.  Keep this explicit
+  // so the sparkline/stats never drift back to another total.
+  function firstAudioMs(lat) {
+    const explicit = Math.max(0, Number(lat.first_audio) || 0);
+    return explicit || stageValues(lat).sum;
+  }
+
+  function drawThermo(total, lat) {
+    const span = Math.max(total * 1.08, SPAN_DEFAULT);
+    const thermo = document.getElementById('lat_thermo');
+    const fill = document.getElementById('lat_fill');
+    const ruler = document.getElementById('lat_ruler');
+    const fillPct = total / span * 100;
+    fill.style.width = fillPct.toFixed(1) + '%';
+    const v = stageValues(lat);
+    const denom = Math.max(total, v.sum, 1);
+    const setSeg = (id, value) => {
+      document.getElementById(id).style.width =
+        (value / denom * 100).toFixed(1) + '%';
+    };
+    setSeg('lat_asr', v.asr);
+    setSeg('lat_llmfirst', v.llmFirst);
+    setSeg('lat_llmrest', v.llmRest);
+    setSeg('lat_tts', v.tts);
+    const first = document.getElementById('lat_first');
+    const firstMs = firstAudioMs(lat);
+    if (firstMs > 0) {
+      first.style.display = '';
+      first.style.left = (Math.min(firstMs, span) / span * 100).toFixed(1) + '%';
+    } else {
+      first.style.display = 'none';
+    }
+    const step = span <= 3000 ? 500 : 1000;
+    let html = `<div class="tick" style="left:0%"><span>0</span></div>`;
+    for (let t = step; t < span; t += step) {
+      html += `<div class="tick" style="left:${(t / span * 100).toFixed(1)}%">` +
+        `<span>${fmtMs(t)}</span></div>`;
+    }
+    html += `<div class="tick" style="left:100%"><span>${fmtMs(Math.round(span))}</span></div>`;
+    if (TARGET_MS < span) {
+      html += `<div class="tick red" style="left:${(TARGET_MS / span * 100).toFixed(1)}%">` +
+        `<span>2s 红线</span></div>`;
+    }
+    ruler.innerHTML = html;
+    thermo.style.display = '';
+  }
+
+  // B2: sparkline with y-axis ticks, grid, the labeled 2s target line,
+  // and an x-axis of turn timestamps (user feedback rev3).
+  // Pixel-exact: W comes from the live clientWidth (no viewBox stretching
+  // -- preserveAspectRatio would deform the axis text); redraws on
+  // window resize and when the tab becomes visible.
+  let lastVals = [];
+  const sparkSvg = document.getElementById('lat_spark');
+
+  function drawSpark(pts) {
+    // pts: [{v: first_audio_ms, ts: "YYYY-MM-DDTHH:MM:SS"}, ...]
+    lastVals = pts;
+    const svg = sparkSvg;
+    const W = svg.clientWidth || 420, H = 96, L = 40, T = 6, B = 26;
+    const plotW = W - L - 4, plotH = H - T - B;
+    const vals = pts.map(p => p.v);
+    const max = Math.max(...vals, TARGET_MS * 1.1, 400);
+    const y = v => T + plotH - (v / max) * plotH;
+    const x = i => L + (i / Math.max(1, pts.length - 1)) * plotW;
+    let inner = '';
+    const step = niceStep(max);
+    for (let v = 0; v <= max; v += step) {
+      inner += `<line x1="${L}" y1="${y(v)}" x2="${W - 4}" y2="${y(v)}" ` +
+        `stroke="#1a2530" stroke-width="1"/>`;
+      if (v > 0) {
+        inner += `<text x="${L - 4}" y="${y(v) + 3}" fill="#5a7a8a" ` +
+          `font-size="9" text-anchor="end">${fmtMs(v)}</text>`;
+      }
+    }
+    inner += `<line x1="${L}" y1="${y(TARGET_MS)}" x2="${W - 4}" ` +
+      `y2="${y(TARGET_MS)}" stroke="#c04040" stroke-dasharray="4 3" ` +
+      `stroke-width="1"/>` +
+      `<text x="${W - 6}" y="${y(TARGET_MS) - 3}" fill="#c06060" ` +
+      `font-size="9" text-anchor="end">2s 目标</text>`;
+    // x-axis: turn timestamps, spaced out (~every 5th point + last)
+    const labelStep = Math.max(1, Math.ceil(pts.length / 5));
+    for (let i = 0; i < pts.length; i += labelStep) {
+      const hhmm = (pts[i].ts || '').slice(11, 16);
+      if (!hhmm) continue;
+      inner += `<line x1="${x(i)}" y1="${T + plotH}" x2="${x(i)}" ` +
+        `y2="${T + plotH + 3}" stroke="#2a3a4a" stroke-width="1"/>` +
+        `<text x="${x(i)}" y="${H - 8}" fill="#5a7a8a" font-size="9" ` +
+        `text-anchor="middle">${hhmm}</text>`;
+    }
+    const poly = pts.map((p, i) => `${x(i)},${y(p.v)}`).join(' ');
+    inner += `<polyline points="${poly}" fill="none" stroke="#7ef0a8" ` +
+      `stroke-width="1.5"/>`;
+    svg.innerHTML = inner;
+  }
+
+  window.addEventListener('resize', () => {
+    if (lastVals.length) drawSpark(lastVals);
+  });
+  // the latency tab starts hidden (clientWidth 0) -- redraw when it
+  // becomes visible or the iframe resizes
+  new ResizeObserver(() => {
+    if (lastVals.length && sparkSvg.clientWidth > 0) drawSpark(lastVals);
+  }).observe(sparkSvg);
+
+  async function fetchLatency() {
+    try {
+      const d = await (await fetch('/api/dialogue?limit=200')).json();
+      const withLat = (d.entries || []).filter(
+        e => e.latency_ms && firstAudioMs(e.latency_ms) > 0);
+      const cur = [...withLat].reverse().find(e => e.reply);
+      const curEl = document.getElementById('lat_current');
+      if (cur) {
+        const lat = cur.latency_ms;
+        const total = Math.max(0, Number(lat.total) || 0);
+        const first = firstAudioMs(lat);
+        const v = stageValues(lat);
+        const labels = [];
+        if (v.asr) labels.push(`ASR ${v.asr}ms`);
+        if (v.llmFirst) labels.push(`LLM首字 ${v.llmFirst}ms`);
+        if (lat.llm) labels.push(`LLM完成 ${lat.llm}ms`);
+        if (v.tts) labels.push(`TTS首音 ${v.tts}ms`);
+        curEl.textContent = (cur.ts ? cur.ts.slice(11, 19) + ' · ' : '') +
+          `首帧 ${first}ms` + (labels.length ? ' · ' + labels.join(' / ') : '') +
+          (first > TARGET_MS ? ' · 超出 2s 红线' : '');
+        curEl.style.color = first > TARGET_MS ? '#ff6b6b' : '';
+        drawThermo(total, lat);
+      } else {
+        curEl.textContent = '暂无数据（跟小饼说句话就有了）';
+        curEl.style.color = '';
+        document.getElementById('lat_thermo').style.display = 'none';
+      }
+      const hist = withLat.slice(-20).map(
+        e => ({v: firstAudioMs(e.latency_ms), ts: e.ts || ''}));
+      const stats = document.getElementById('lat_stats');
+      if (hist.length) {
+        const sorted = [...hist.map(p => p.v)].sort((a, b) => a - b);
+        const pct = q => sorted[Math.min(sorted.length - 1,
+          Math.floor(q * sorted.length))];
+        stats.textContent = `P50 ${pct(0.5)}ms ｜ P95 ${pct(0.95)}ms ｜ ` +
+          `最大 ${sorted[sorted.length - 1]}ms ｜ ${hist.length} 轮`;
+        drawSpark(hist);
+      } else {
+        stats.textContent = '—';
+      }
+    } catch (e) { /* keep last render */ }
+  }
+
+  fetchLatency();
+  setInterval(fetchLatency, 5000);
+})();
 </script>
 </body>
 </html>

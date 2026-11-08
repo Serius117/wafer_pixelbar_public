@@ -108,9 +108,10 @@ def _apply_cloud_llm(conf: dict, mode: str) -> str:
     resolves credentials from the local opencode config.
     """
     from engines.provider_config import load_env_file, load_inference, resolve_llm
+    from engines.provider_state import apply_state
 
     load_env_file()
-    inf = load_inference()
+    inf = apply_state(load_inference())
     provider = str((inf.get("llm") or {}).get("provider") or "local")
     if mode == "local" or (mode == "auto" and provider != "openai_compat"):
         return "local llama-server :8080"

@@ -307,6 +307,15 @@ class TestTextFaceController:
         assert sink.restores == 2  # no repeat restores
         ctrl.stop()
 
+    async def test_stop_restores_clock(self) -> None:
+        """Exit: stop() must clear the last text/kaomoji and show the clock."""
+        bus, sink, ctrl = self._make()
+        await ctrl.start()
+        await bus.publish("llm.emotion", {"tag": "happy"})
+        assert sink.restores == 1
+        ctrl.stop()
+        assert sink.restores == 2
+
     async def test_game_exit_restores_immediately(self) -> None:
         """mode.switch normal -> clock right away (no 10s wait)."""
         bus, sink, ctrl = self._make()

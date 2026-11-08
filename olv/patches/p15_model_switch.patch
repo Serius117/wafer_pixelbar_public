@@ -1,0 +1,91 @@
+diff --git a/src/open_llm_vtuber/routes.py b/src/open_llm_vtuber/routes.py
+--- a/src/open_llm_vtuber/routes.py
++++ b/src/open_llm_vtuber/routes.py
+@@ -41,6 +41,17 @@
+             logger.error(f"Error in WebSocket connection: {e}")
+             await ws_handler.handle_disconnect(client_uid)
+             raise
++
++    @router.post("/switch-model")
++    async def switch_model(payload: dict):
++        """Switch Live2D model for all connected clients (console proxy)."""
++        model_name = str(payload.get("model_name") or "").strip()
++        changed = await ws_handler.switch_model(model_name) if model_name else []
++        return JSONResponse(
++            {"ok": bool(changed), "model": model_name,
++             "clients": len(changed)},
++            status_code=200 if changed else 404,
++        )
+ 
+     return router
+ 
+
+diff --git a/src/open_llm_vtuber/websocket_handler.py b/src/open_llm_vtuber/websocket_handler.py
+--- a/src/open_llm_vtuber/websocket_handler.py
++++ b/src/open_llm_vtuber/websocket_handler.py
+@@ -55,6 +55,7 @@
+     images: Optional[List[str]]
+     history_uid: Optional[str]
+     file: Optional[str]
++    model_name: Optional[str]
+     display_text: Optional[dict]
+ 
+ 
+@@ -94,6 +95,7 @@
+             "ai-speak-signal": self._handle_conversation_trigger,
+             "fetch-configs": self._handle_fetch_configs,
+             "switch-config": self._handle_config_switch,
++            "switch-model": self._handle_model_switch,
+             "fetch-backgrounds": self._handle_fetch_backgrounds,
+             "audio-play-start": self._handle_audio_play_start,
+             "request-init-config": self._handle_init_config_request,
+@@ -613,6 +615,49 @@
+             context = self.client_contexts[client_uid]
+             await context.handle_config_switch(websocket, config_file_name)
+ 
++    async def switch_model(self, model_name: str) -> list:
++        """Switch the Live2D model for all live contexts; notify each client."""
++        contexts = [self.default_context_cache]
++        contexts.extend(ctx for ctx in self.client_contexts.values()
++                        if ctx is not self.default_context_cache)
++        changed = []
++        for context in contexts:
++            try:
++                context.init_live2d(model_name)
++                actual = getattr(context.live2d_model, "live2d_model_name", "")
++                if actual == model_name:
++                    changed.append(context)
++            except Exception as exc:  # noqa: BLE001
++                logger.warning(f"Live2D model switch failed: {exc}")
++        for context in changed:
++            send = getattr(context, "send_text", None)
++            if send is None:
++                continue
++            try:
++                await send(json.dumps({
++                    "type": "set-model-and-conf",
++                    "model_info": context.live2d_model.model_info,
++                    "conf_name": context.character_config.conf_name,
++                    "conf_uid": context.character_config.conf_uid,
++                }))
++            except Exception as exc:  # noqa: BLE001
++                logger.warning(f"Live2D model notify failed: {exc}")
++        return changed
++
++    async def _handle_model_switch(
++        self, websocket: WebSocket, client_uid: str, data: dict
++    ):
++        """WS variant of switch_model (kept for external clients)."""
++        model_name = str(data.get("model_name") or "").strip()
++        if not model_name:
++            return
++        changed = await self.switch_model(model_name)
++        if not changed:
++            await websocket.send_text(json.dumps({
++                "type": "error",
++                "message": f"Unknown Live2D model: {model_name}",
++            }))
++
+     async def _handle_fetch_backgrounds(
+         self, websocket: WebSocket, client_uid: str, data: WSMessage
+     ) -> None:

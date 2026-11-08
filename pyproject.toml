@@ -21,6 +21,8 @@ dev = [
 gpu = []
 # Real-device LED sink.
 pixelbar = ["hidapi>=0.14"]
+# Qwen3-TTS realtime SDK (optional online TTS provider).
+qwen = ["dashscope>=2.0"]
 
 [tool.setuptools.packages.find]
 include = ["core*", "engines*", "olv*", "render*", "bridge*", "ctl*", "gamedog*"]

@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 LOGS = ROOT / "logs"
 PY = str(ROOT / ".venv" / "Scripts" / "python.exe")
 
@@ -104,6 +106,67 @@ def stop_all() -> None:
     subprocess.run([PY, str(ROOT / "scripts" / "stop_all.py")], cwd=ROOT)
 
 
+def _provider_state_mtime() -> int:
+    from engines.provider_state import state_path
+
+    try:
+        return state_path().stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _restart_provider_stack(children: dict[str, subprocess.Popen],
+                            args: argparse.Namespace,
+                            env: dict[str, str],
+                            changed: list[str]) -> None:
+    """Reload the services affected by a console provider switch.
+
+    ASR CPU/GPU only needs the ASR process restarted -- OLV, TTS and the
+    browser WebSocket must stay alive.  LLM/TTS changes still need the full
+    trio + OLV reload because their clients are constructed at startup.
+    """
+    from engines.provider_state import load_state
+
+    print(f"== provider switch: {load_state()} (changed={changed}) ==",
+          flush=True)
+    if changed == ["asr"]:
+        if args.no_trio:
+            print("--no-trio: ASR switch not applied", flush=True)
+            return
+        subprocess.call([PY, str(ROOT / "scripts" / "serve_inference.py"),
+                         "--stop", "--only", "asr"], cwd=ROOT, env=env)
+        subprocess.call([PY, str(ROOT / "scripts" / "serve_inference.py"),
+                         "--start", "--only", "asr"],
+                        cwd=ROOT, env=env)
+        return
+
+    # Stop OLV first: its old child would otherwise race the new config.
+    old_olv = children.pop("olv", None)
+    if old_olv is not None and old_olv.poll() is None:
+        old_olv.terminate()
+        try:
+            old_olv.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            old_olv.kill()
+
+    if not args.no_trio:
+        subprocess.call([PY, str(ROOT / "scripts" / "serve_inference.py"),
+                         "--stop"], cwd=ROOT, env=env)
+        only = "llm,asr,tts"
+        if args.no_tts:
+            only = "llm,asr"
+        subprocess.call([PY, str(ROOT / "scripts" / "serve_inference.py"),
+                         "--start", "--only", only],
+                        cwd=ROOT, env=env)
+    if not args.no_olv:
+        subprocess.call([PY, str(ROOT / "scripts" / "setup_olv.py")],
+                        cwd=ROOT, env=env)
+        children["olv"] = _spawn("olv", [PY, str(ROOT / "scripts" /
+                                                 "run_olv.py")], env)
+        if not _wait(12393, "olv", timeout=120.0):
+            print("OLV did not recover after provider switch", flush=True)
+
+
 def start(args: argparse.Namespace) -> int:
     if _acquire_instance_lock() is None:
         print("another dev_stack is already running; use status/stop first",
@@ -164,7 +227,24 @@ def start(args: argparse.Namespace) -> int:
             stop_all()
             return 1
 
+    # D62: open the unified shell in the DEFAULT browser once everything
+    # is listening (opt out with --no-browser).
+    if not args.no_browser:
+        import webbrowser
+
+        shell_url = "http://127.0.0.1:8790/app"
+        print(f"== opening browser: {shell_url} ==", flush=True)
+        try:
+            webbrowser.open(shell_url)
+        except Exception as exc:  # noqa: BLE001 -- never fail the stack
+            print(f"browser open failed ({exc}); open {shell_url} manually",
+                  flush=True)
+
     print("== stack up; press Ctrl+C to stop everything ==", flush=True)
+    from engines.provider_state import load_state
+
+    provider_state = load_state()
+    provider_mtime = _provider_state_mtime()
     try:
         while True:
             for name, proc in children.items():
@@ -174,6 +254,15 @@ def start(args: argparse.Namespace) -> int:
                           flush=True)
                     stop_all()
                     return 1
+            current_mtime = _provider_state_mtime()
+            if current_mtime != provider_mtime:
+                provider_mtime = current_mtime
+                current_state = load_state()
+                changed = [key for key in current_state
+                           if current_state[key] != provider_state.get(key)]
+                provider_state = current_state
+                if changed:
+                    _restart_provider_stack(children, args, env, changed)
             time.sleep(2.0)
     except KeyboardInterrupt:
         print("== stopping ==", flush=True)
@@ -208,6 +297,9 @@ def main(argv: list[str] | None = None) -> int:
     start_ap.add_argument("--no-cleanup", action="store_true")
     start_ap.add_argument("--render-debug", action="store_true",
                           help="log every LED text push into render.log")
+    start_ap.add_argument("--no-browser", action="store_true",
+                          help="do not auto-open the unified shell page "
+                               "(D62)")
     sub.add_parser("stop")
     sub.add_parser("status")
     args = ap.parse_args(argv)

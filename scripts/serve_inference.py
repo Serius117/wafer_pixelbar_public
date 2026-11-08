@@ -37,9 +37,10 @@ NAMES = ("llm", "asr", "tts")
 
 def load_config(path: Path | None = None) -> dict:
     from engines.provider_config import load_inference
+    from engines.provider_state import apply_state
 
     if path is None:
-        return load_inference()
+        return apply_state(load_inference())
     return load_inference(path=path)
 
 
@@ -58,6 +59,9 @@ def _enabled(conf: dict, name: str) -> bool:
 
 def _cmd(conf: dict, name: str) -> list[str]:
     server = str(ROOT / conf["llama_server"])
+    cuda = conf.get("llama_server_cuda")
+    if cuda and (ROOT / str(cuda)).exists():
+        server = str(ROOT / str(cuda))
     if name == "llm":
         c = conf["llm"]
         return [server, "-m", str(ROOT / c["model"]), "-ngl",
@@ -66,8 +70,10 @@ def _cmd(conf: dict, name: str) -> list[str]:
                 *[str(a) for a in c.get("extra_args", [])]]
     if name == "asr":
         c = conf["asr"]
+        device = str(c.get("device", "cpu")).lower()
+        ngl = 99 if device == "gpu" else 0
         return [server, "-m", str(ROOT / c["model"]), "--mmproj",
-                str(ROOT / c["mmproj"]), "-ngl", str(c["n_gpu_layers"]),
+                str(ROOT / c["mmproj"]), "-ngl", str(ngl),
                 "-c", str(c["ctx"]), "--host", c["host"],
                 "--port", str(c["port"]), "--alias", c["alias"],
                 *[str(a) for a in c.get("extra_args", [])]]
@@ -106,6 +112,22 @@ def _cmd(conf: dict, name: str) -> list[str]:
             ("voice_id_env", "--voice-id-env"),
             ("sample_rate", "--sample-rate"),
             ("format", "--format"),
+            ("timeout", "--timeout"),
+        ):
+            if c.get(key) not in (None, ""):
+                cmd += [flag, str(c[key])]
+        cmd += [str(a) for a in c.get("extra_args", [])]
+        return cmd
+    if provider == "qwen_tts":
+        cmd += ["--model", str(c.get("model", "qwen3-tts-flash"))]
+        if c.get("voice"):
+            cmd += ["--voice", str(c["voice"])]
+        for key, flag in (
+            ("endpoint", "--endpoint"),
+            ("ws_url", "--ws-url"),
+            ("api_key_env", "--api-key-env"),
+            ("voice_env", "--voice-env"),
+            ("sample_rate", "--sample-rate"),
             ("timeout", "--timeout"),
         ):
             if c.get(key) not in (None, ""):
@@ -199,15 +221,23 @@ def _kill(pid: int, why: str) -> None:
         print(f"kill {why} (pid {pid}) failed: {e}", flush=True)
 
 
-def stop(conf: dict | None = None) -> int:
+def stop(conf: dict | None = None, only: list[str] | None = None) -> int:
+    """Stop the whole trio, or just the named services when ``only`` is set."""
+    selected = set(only) if only else set(NAMES)
     pids = _read_pids()
     killed = set()
-    for name, pid in pids.items():
+    for name, pid in list(pids.items()):
+        if name not in selected:
+            continue
         _kill(pid, name)
         killed.add(pid)
-    PID_FILE.unlink(missing_ok=True)
+        pids.pop(name, None)
+    if pids:
+        PID_FILE.write_text(json.dumps(pids, indent=2), encoding="utf-8")
+    else:
+        PID_FILE.unlink(missing_ok=True)
     if conf:
-        for name in NAMES:
+        for name in selected:
             owner = _port_owner(int(conf[name]["port"]))
             if owner and owner not in killed:
                 _kill(owner, f"{name} orphan")
@@ -291,14 +321,14 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     conf = load_config(Path(args.config) if args.config else None)
-    if args.stop:
-        return stop(conf)
-    if args.status:
-        return status(conf)
     only = [n.strip() for n in args.only.split(",") if n.strip()]
     bad = [n for n in only if n not in NAMES]
     if bad:
         ap.error(f"unknown service(s): {bad}")
+    if args.stop:
+        return stop(conf, only)
+    if args.status:
+        return status(conf)
     return start(conf, only, args.timeout)
 
 

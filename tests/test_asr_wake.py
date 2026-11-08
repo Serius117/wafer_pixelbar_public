@@ -90,6 +90,29 @@ class TestAsrWake:
         assert self.llm_calls == []
         assert wh._session.is_standby() is False
 
+    async def test_work_wake_with_punctuation_or_space(self, agent):
+        pairs = await self._say(agent, "小饼，干活，查一下测试文件")
+        assert pairs
+        assert agent._bridge.submitted == [("查一下测试文件", "master")]
+
+    async def test_truncated_bare_work_wake_recovers(self, agent):
+        """Bare 小饼干活 may be decoded as 小饼。 -> arm one-shot work wake."""
+        import olv.wafer_hooks as wh
+
+        pairs = await self._say(agent, "小饼。")
+        assert any("好，说吧" in p[0] for p in pairs)
+        assert agent._bridge.submitted == []
+        assert wh._session.pending_work is True
+
+    async def test_truncated_work_wake_in_active_session(self, agent):
+        """Even in always-on mode, bare 小饼。 must recover work-wake."""
+        import olv.wafer_hooks as wh
+
+        await self._say(agent, "小饼小饼，讲个笑话")
+        pairs = await self._say(agent, "小饼。")
+        assert any("好，说吧" in p[0] for p in pairs)
+        assert wh._session.pending_work is True
+
     async def test_active_session_allows_follow_up_without_wake(self, agent):
         import olv.wafer_hooks as wh
 

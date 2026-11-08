@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -138,6 +139,22 @@ def kill_tree(pid: int) -> list[int]:
     return killed
 
 
+def restore_led() -> dict:
+    """Best-effort clock restore after render was killed (no finally on Win)."""
+    path = ROOT / "scripts" / "restore_led.py"
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(path), "--json"],
+            cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=20,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return json.loads(proc.stdout.strip().splitlines()[-1])
+        return {"error": proc.stderr.strip()[:200] or "restore failed"}
+    except Exception as exc:  # noqa: BLE001 -- teardown must not fail
+        return {"error": str(exc)[:200]}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dry-run", action="store_true")
@@ -154,7 +171,8 @@ def main(argv: list[str] | None = None) -> int:
             killed.extend(kill_tree(int(row["pid"])))
         time.sleep(1.5)
         left = find_targets()
-        report = {"killed": sorted(set(killed)), "remaining": left}
+        report = {"killed": sorted(set(killed)), "remaining": left,
+                  "led": restore_led()}
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
@@ -165,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.dry_run:
             print(f"killed {len(set(report['killed']))} process(es); "
                   f"remaining {len(report['remaining'])}", flush=True)
+            led = report.get("led") or {}
+            print(f"LED clock restore: {led}", flush=True)
     return 0
 
 

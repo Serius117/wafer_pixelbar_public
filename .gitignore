@@ -4,6 +4,9 @@ temp_script/
 # 模型/资产暂存区（跨机拷贝中转，不入库）
 modles_transfer/
 
+# Optional CUDA build of llama.cpp (large binaries; CPU build stays tracked)
+tools/llama-cuda/
+
 # OLV 上游检出（fork 本体不入库，补丁以 olv/patches/*.patch 管理）
 olv/upstream/
 
@@ -41,10 +44,6 @@ voiceprints/
 # 模拟器/渲染产物
 render_out/
 cache/
-
-# 内部开发日志/验收原文：只保留本地，不进入公开仓库
-docs/DEVLOG.md
-docs/测试结果.txt
 
 # Public snapshot: local assets not distributed
 tools/

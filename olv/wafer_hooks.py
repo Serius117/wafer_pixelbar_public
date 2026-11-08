@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -34,6 +35,26 @@ logger: Any = logging.getLogger(__name__)
 
 # D48: dual wake word -- the work wake word (chat wake keeps D31 defaults)
 WORK_WAKE_KEYWORD = "小饼干活"
+_WORK_WAKE_RE = re.compile(r"小饼[\s，。！？、,.!?：:；;]*干活(?:儿)?")
+_COMPACT_RE = re.compile(r"[\s，。！？、,.!?：:；;]+")
+
+
+def _compact_text(text: str) -> str:
+    return _COMPACT_RE.sub("", text or "")
+
+
+def _has_work_wake(text: str) -> bool:
+    """Match 小饼干活 even if ASR inserts spaces/punctuation."""
+    return bool(_WORK_WAKE_RE.search(text or ""))
+
+
+def _strip_work_wake(text: str) -> str:
+    return _WORK_WAKE_RE.sub("", text or "", count=1)
+
+
+def _is_truncated_work_wake(text: str) -> bool:
+    """ASR sometimes drops 干活 on the bare phrase and returns 小饼。."""
+    return _compact_text(text) == "小饼"
 
 
 class _PctLogger:
@@ -85,6 +106,8 @@ HUB_HOST = "127.0.0.1"
 HUB_PORT = 8765
 GRACE_SECONDS = 5.0
 RECENT_MAX = 5
+# TASK.CORE.02: chat context window (3 user/assistant turns max).
+MEMORY_MAX_MESSAGES = 6
 
 # ---------------------------------------------------------------------------
 # P1: Voiceprint gate (01a)
@@ -123,6 +146,7 @@ class _GateState:
         self.verifier: SherpaCampplusVerifier | None = None
         self.hub: HubClient | None = None
         self._hub_connected = False
+        self.gate_enabled = True  # CONSOLE.11 rev: console gate_toggle
 
     async def _ensure(self) -> bool:
         if self.ready or self.failed:
@@ -143,6 +167,11 @@ class _GateState:
             try:
                 await self.hub.connect()
                 self._hub_connected = True
+                # CONSOLE.11 rev: the console quick-control buttons publish
+                # ctl.hotkey on the hub -- wafer_hooks is the live consumer
+                # in the OLVCORE architecture (the old core-pipeline
+                # WakeController no longer runs).
+                self.hub.subscribe(topics.CTL_HOTKEY, _on_ctl_hotkey)
             except Exception as hub_exc:  # noqa: BLE001
                 logger.warning("hub connect failed (events won't publish): %s",
                                hub_exc)
@@ -160,6 +189,53 @@ _state = _GateState()
 # P1→P2 handoff: current speaker for this conversation turn
 _current_speaker: dict = {"id": None, "role": None}
 
+# TASK.CONSOLE.13: per-turn stage timing.  ASR starts when the gate passes
+# (the OLV fork calls ASR immediately afterwards); TTS first audio arrives
+# from the OLV tts_manager hook.
+_last_audio_ready_ts = 0.0
+_turn_timing: dict[str, Any] | None = None
+
+
+def _mark_audio_ready() -> None:
+    global _last_audio_ready_ts
+    _last_audio_ready_ts = time.monotonic()
+
+
+def _append_latency_fragment(timing: dict[str, Any]) -> None:
+    """Write TTS timing beside the dialogue JSONL (append-only sidecar)."""
+    import json
+
+    try:
+        d = _ROOT / "logs" / "dialogue"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{time.strftime('%Y-%m-%d')}.latency.jsonl"
+        record = {
+            "id": timing.get("id"),
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "latency_ms": {
+                "tts": timing.get("tts", 0),
+                "total": timing.get("total", 0),
+            },
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001 -- timing must never block speech
+        logger.warning("latency fragment write failed: %s", exc)
+
+
+def note_tts_first() -> None:
+    """Called by the OLV TTS hook when the first audio frame is queued."""
+    timing = _turn_timing
+    if not timing or timing.get("tts") is not None:
+        return
+    now = time.monotonic()
+    elapsed = int((now - float(timing.get("turn_start", now))) * 1000)
+    llm = int(timing.get("llm", 0))
+    tts = max(0, elapsed - llm)
+    timing["tts"] = tts
+    timing["total"] = int(timing.get("asr", 0)) + llm + tts
+    _append_latency_fragment(timing)
+
 
 async def _publish(topic: str, payload: dict) -> None:
     if _state.hub is None:
@@ -168,6 +244,41 @@ async def _publish(topic: str, payload: dict) -> None:
         await _state.hub.publish(topic, payload)
     except Exception:  # noqa: BLE001
         logger.warning("hub publish %s failed", topic)
+
+
+# CONSOLE.11 rev: console quick-control consumer. The old architecture had
+# core.WakeController on the bus; after OLVCORE the live session/gate
+# state lives here, so these actions are handled in-process.
+_agent_ref: WaferAgent | None = None
+
+
+async def _on_ctl_hotkey(topic: str, payload: dict) -> None:
+    action = str(payload.get("action", ""))
+    if action == "wake":
+        _session.wake()
+        await _publish(topics.SESSION_STATE,
+                       {"state": "listening", "timeout_s": _session.timeout_s})
+    elif action == "sleep":
+        _session.state = "standby"
+        _session.pending_work = False
+        _session.wake_needs_verify = False
+        await _publish(topics.SESSION_STATE, {"state": "standby"})
+    elif action == "gate_toggle":
+        _state.gate_enabled = not _state.gate_enabled
+        await _publish(topics.GATE_ENABLED,
+                       {"enabled": _state.gate_enabled})
+        logger.info("gate %s (console toggle)",
+                    "enabled" if _state.gate_enabled else "disabled")
+    elif action in ("approve", "deny"):
+        agent = _agent_ref
+        if agent is not None and agent._pending_permission is not None:
+            await agent._do_approval(action == "approve")
+        else:
+            await _publish(topics.SYSTEM_NOTIFY,
+                           {"text": "当前没有等待确认的权限请求"})
+    elif action == "task_cancel":
+        # bridge's _on_cancel treats a missing task_id as "cancel all"
+        await _publish(topics.TASK_CANCEL, {"reason": "console"})
 
 
 async def gate_check(audio: Any) -> str | None:
@@ -193,6 +304,14 @@ async def gate_check(audio: Any) -> str | None:
 
     if not await _state._ensure():
         _current_speaker.update(id="unknown", role="member")
+        _mark_audio_ready()
+        return "unknown"
+
+    # CONSOLE.11 rev: console gate_toggle can disable verification
+    # entirely (debug aid) -- pass through as unknown speaker.
+    if not _state.gate_enabled:
+        _current_speaker.update(id="unknown", role="member")
+        _mark_audio_ready()
         return "unknown"
 
     import numpy as np
@@ -216,10 +335,13 @@ async def gate_check(audio: Any) -> str | None:
         role = get_speaker_role(result.speaker_id)
         _current_speaker.update(id=result.speaker_id, role=role)
         _session.keep_alive()  # OLVCORE.02: active speech resets timeout
+        _mark_audio_ready()
         return result.speaker_id
     # R.21/D46: a drop/gray must not leave the UI stuck at "thinking" -- the
     # chain returns early and would otherwise never publish another state.
-    await _publish(topics.SESSION_STATE, {"state": "listening"})
+    # CONSOLE.11 D4: timeout_s rides along for the console idle countdown.
+    await _publish(topics.SESSION_STATE,
+                   {"state": "listening", "timeout_s": _session.timeout_s})
     return None
 
 
@@ -408,6 +530,10 @@ class _BridgeClient:
             "task": {"prompt": text, "original_text": text,
                      "speaker_id": speaker_id, "task_id": task_id},
             "project": self._current_project,
+            # TASK.CORE.04 Bridge B: recent context for the composer's
+            # local anaphora resolution (stays on this machine; only the
+            # resolved self-contained prompt goes to opencode, D14)
+            "recent_context": list(self._recent),
         })
         self._active = True
         self._current_task_id = task_id
@@ -479,12 +605,29 @@ class WaferAgent:
         self._pending_clarify: dict | None = None
         # D51: pending permission.asked (set by the notification pump)
         self._pending_permission: dict | None = None
-        self._memory: list[dict] = []  # simple context (v1 no rolling summary)
+        self._memory: list[dict] = []  # TASK.CORE.02: chat context messages
+        self._memory_ts: float = 0.0  # monotonic ts of the last chat turn
+        # TASK.CORE.05 L2: session-start context (summaries + worklog +
+        # restart-recovery turns); loaded once per session, not modified
+        self._session_context: list[dict] = []
         self._announce: list[str] = []  # fallback results waiting to be spoken
         self._announced_ids: set[str] = set()
         self._announced_permissions: set[str] = set()
         self._summary_inflight: set[str] = set()
         self._pump_started = False
+        # TASK.DIALOG.01: per-turn instrumentation (reset in chat() wrapper)
+        self._turn_route: str = ""
+        self._turn_emotion: str = ""
+        self._turn_llm_ms: int = 0
+        # TASK.CONSOLE.13: stage timing (all offsets relative to turn start)
+        self._turn_id: str = ""
+        self._turn_start: float = 0.0
+        self._turn_asr_ms: int = 0
+        self._turn_llm_first_ms: int = 0
+        self._turn_llm_total_ms: int = 0
+        # CONSOLE.11 rev: console approve/deny hotkey needs the live agent
+        global _agent_ref
+        _agent_ref = self
 
     def _ensure_bridge(self) -> _BridgeClient:
         if self._bridge is None:
@@ -636,14 +779,245 @@ class WaferAgent:
         if sender is not None:
             try:
                 sender(task_id, text)
-                return
             except Exception as exc:  # noqa: BLE001 -- fall back to next turn
                 logger.warning("proactive announce enqueue failed: %s", exc)
-        self._announce.append(text)
-        # cap the fallback queue so a long soak cannot grow it forever
+                self._announce.append(text)
+                self._announce = self._announce[-3:]
+        else:
+            self._announce.append(text)
+            # cap the fallback queue so a long soak cannot grow it forever
+            self._announce = self._announce[-3:]
+        # TASK.CORE.04 Bridge A: inject into chat memory as a bounded
+        # synthetic exchange -- the chat brain knows what just happened
+        # (ask "刚才结果是多少" -> it can answer). Cross-session recall
+        # is L3 (work log), this only covers the current session.
+        task_prompt = str(payload.get("prompt") or "")[:60]
+        status = "完成" if ok is not False else "失败"
+        self._memory.append(
+            {"role": "user", "content": f"[派活] {task_prompt}"})
+        self._memory.append(
+            {"role": "assistant",
+             "content": f"[任务{status}] {summary[:80]}"})
+        self._memory = self._memory[-MEMORY_MAX_MESSAGES:]
+        # TASK.CORE.06 L3: append to the persistent work log
+        self._append_worklog(task_prompt, summary[:80], ok is not False)
         self._announce = self._announce[-3:]
 
     # --- TASK.SERVE.04: LLM semantic approval helpers ------------------
+
+    # --- TASK.CORE.05/06: memory persistence (L2 + L3) -------------------
+
+    _MEMORY_DIR = None  # lazy: _ROOT / "data" / "memory"
+
+    @classmethod
+    def _memory_dir(cls) -> Path:
+        if cls._MEMORY_DIR is None:
+            cls._MEMORY_DIR = _ROOT / "data" / "memory"
+        return cls._MEMORY_DIR
+
+    def _persist_memory(self) -> None:
+        """Save the current _memory to disk (original layer, L2).
+
+        Called after every chat turn so restart recovery always has the
+        latest data. A ~6-message JSON dump is <1ms, negligible.
+        """
+        import json
+        import time as _time
+
+        try:
+            d = self._memory_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            data = {"timestamp": _time.time(),
+                    "memory": self._memory}
+            (d / "last_session.json").write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 -- never block chat
+            logger.warning("persist_memory failed: %s", exc)
+
+    def _load_last_session(self) -> dict | None:
+        """Read the original layer (restart recovery)."""
+        import json
+
+        try:
+            p = self._memory_dir() / "last_session.json"
+            if not p.exists():
+                return None
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("load_last_session failed: %s", exc)
+            return None
+
+    def _append_summary(self, summary: str) -> None:
+        """Append a session summary to the summary layer (L2)."""
+        import json
+        import time as _time
+
+        try:
+            d = self._memory_dir() / "summaries"
+            d.mkdir(parents=True, exist_ok=True)
+            date_str = _time.strftime("%Y-%m-%d")
+            p = d / f"{date_str}.json"
+            entries = []
+            if p.exists():
+                try:
+                    entries = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001 -- corrupt file, start fresh
+                    entries = []
+            entries.append({"timestamp": _time.time(),
+                            "summary": summary[:200]})
+            # cap: 20 entries per day
+            entries = entries[-20:]
+            p.write_text(json.dumps(entries, ensure_ascii=False, indent=2),
+                         encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("append_summary failed: %s", exc)
+
+    def _load_recent_summaries(self, days: int = 7) -> list[str]:
+        """Load summaries from the last N days (summary layer, L2)."""
+        import json
+        import time as _time
+
+        result = []
+        try:
+            d = self._memory_dir() / "summaries"
+            if not d.exists():
+                return result
+            cutoff = _time.time() - days * 86400
+            for p in sorted(d.glob("*.json")):
+                try:
+                    entries = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    continue
+                for e in entries:
+                    if e.get("timestamp", 0) >= cutoff:
+                        result.append(e.get("summary", ""))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("load_recent_summaries failed: %s", exc)
+        return [s for s in result if s.strip()]
+
+    def _append_worklog(self, prompt: str, summary: str, ok: bool) -> None:
+        """Append a task result to the work log (L3, CORE.06)."""
+        import json
+        import time as _time
+
+        try:
+            d = self._memory_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            p = d / "worklog.json"
+            entries = []
+            if p.exists():
+                try:
+                    entries = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    entries = []
+            entries.append({
+                "timestamp": _time.time(),
+                "prompt": prompt[:80],
+                "summary": summary[:80],
+                "ok": ok,
+            })
+            # cap: 50 entries rolling
+            entries = entries[-50:]
+            p.write_text(json.dumps(entries, ensure_ascii=False, indent=2),
+                         encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("append_worklog failed: %s", exc)
+
+    def _load_recent_worklog(self, count: int = 3) -> list[dict]:
+        """Load the most recent work log entries (L3)."""
+        import json
+
+        try:
+            p = self._memory_dir() / "worklog.json"
+            if not p.exists():
+                return []
+            entries = json.loads(p.read_text(encoding="utf-8"))
+            return entries[-count:]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("load_recent_worklog failed: %s", exc)
+            return []
+
+    async def _archive_session(self, memory: list[dict]) -> None:
+        """Generate a ~100-char summary of a session and archive it (L2).
+
+        Called when a session ends (timeout detected or explicit 拜拜).
+        Failure falls back to a truncated raw excerpt, never blocks chat.
+        """
+        if not memory:
+            return
+        try:
+            convo = "\n".join(
+                f"{'主人' if m['role'] == 'user' else '小饼'}: "
+                f"{m['content'][:60]}"
+                for m in memory if m.get("content"))
+            reply = await self._llm_complete([{
+                "role": "user",
+                "content": (f"请用不超过100字总结以下对话的要点，"
+                            f"包括聊了什么话题和做了什么任务：\n{convo}"),
+            }])
+            summary = reply.strip()[:200]
+            if not summary or len(summary) < 10:
+                # fallback: first 80 chars of the conversation
+                summary = convo[:80]
+        except Exception:  # noqa: BLE001 -- never block on summary failure
+            summary = memory[0].get("content", "")[:80]
+        self._append_summary(summary)
+        logger.info("session archived: %r", summary[:60])
+
+    def _load_session_context(self,
+                              include_recovery: bool = True) -> list[dict]:
+        """Build the context injected at the start of a new session (L2+L3).
+
+        Three sources (all local files, zero latency):
+        1. Recent summaries (last 7 days) -> system-level note
+        2. Recent work log (last 3 tasks) -> system-level note
+        3. Previous session's turns (same day, restart only) -> recovery
+        """
+        import time as _time
+
+        context: list[dict] = []
+
+        # 1. Summaries
+        summaries = self._load_recent_summaries(days=7)
+        if summaries:
+            text = "\n".join(f"- {s}" for s in summaries[-5:])
+            context.append({"role": "system",
+                            "content": f"[最近几天的对话摘要]\n{text}"})
+
+        # 2. Work log
+        worklog = self._load_recent_worklog(count=3)
+        if worklog:
+            lines = []
+            for w in worklog:
+                status = "完成" if w.get("ok") else "失败"
+                lines.append(f"- {w.get('prompt', '')[:30]} → "
+                             f"{w.get('summary', '')[:40]} ({status})")
+            context.append({"role": "system",
+                            "content": "[最近的工作任务]\n" +
+                                        "\n".join(lines)})
+
+        # 3. Restart recovery: previous session's turns (same day,
+        #    and only when the process actually restarted)
+        if include_recovery:
+            last = self._load_last_session()
+            if last:
+                ts = last.get("timestamp", 0)
+                # only if from today (same calendar day)
+                if _time.strftime("%Y-%m-%d", _time.localtime(ts)) == \
+                        _time.strftime("%Y-%m-%d"):
+                    prev_turns = last.get("memory", [])
+                    if prev_turns:
+                        context.extend(prev_turns[-6:])
+                        logger.info("restart recovery: %d turns from "
+                                    "previous session",
+                                    len(prev_turns[-6:]))
+
+        return context
+
+    def _clear_session_context(self) -> None:
+        """Reset the session context (called on 拜拜 or session gap)."""
+        self._session_context = []
 
     async def _llm_complete(self, messages: list[dict]) -> str:
         """Accumulate the full chat-LLM reply (non-streaming use)."""
@@ -721,7 +1095,91 @@ class WaferAgent:
 
     async def chat(self, text: str, metadata: dict | None = None
                    ) -> AsyncIterator[tuple[str, str]]:
-        """Main entry: route and handle. Yields (display_text, tts_text) pairs.
+        """Main entry with dialogue logging (TASK.DIALOG.01).
+
+        Wraps _chat_impl: captures per-turn timing, route, emotion, and
+        reply text; flushes one JSONL record to logs/dialogue/<date>.jsonl
+        at turn end. Records are permanent (no auto-cleanup).
+        """
+        global _turn_timing
+
+        import time as _time
+
+        turn_start = _time.monotonic()
+        audio_ready = _last_audio_ready_ts
+        if audio_ready and 0 <= turn_start - audio_ready <= 30.0:
+            asr_ms = max(0, int((turn_start - audio_ready) * 1000))
+        else:
+            asr_ms = 0
+        self._turn_id = uuid.uuid4().hex[:12]
+        self._turn_start = turn_start
+        self._turn_asr_ms = asr_ms
+        self._turn_llm_first_ms = 0
+        self._turn_llm_total_ms = 0
+        self._turn_route = ""
+        self._turn_emotion = ""
+        self._turn_llm_ms = 0
+        _turn_timing = {
+            "id": self._turn_id,
+            "turn_start": turn_start,
+            "asr": asr_ms,
+            "llm": 0,
+            "tts": None,
+            "total": asr_ms,
+        }
+        reply_parts: list[str] = []
+
+        try:
+            async for pair in self._chat_impl(text, metadata):
+                reply_parts.append(pair[0])
+                yield pair
+        finally:
+            timing = _turn_timing or {}
+            llm_ms = self._turn_llm_total_ms
+            tts_ms = int(timing.get("tts") or 0)
+            timing["llm"] = llm_ms
+            timing["total"] = asr_ms + llm_ms + tts_ms
+            log = {
+                "id": self._turn_id,
+                "ts": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "speaker": _current_speaker.get("id", "unknown"),
+                "asr_text": (text or "")[:200],
+                "route": self._turn_route,
+                "emotion": self._turn_emotion,
+                "reply": "".join(reply_parts)[:300],
+                "latency_ms": {
+                    "total": timing["total"],
+                    "asr": asr_ms,
+                    "llm_first": self._turn_llm_first_ms,
+                    "llm": llm_ms,
+                    "tts": tts_ms,
+                },
+                "memory_size": len(self._memory),
+                "session_ctx_size": len(self._session_context),
+            }
+            self._write_dialogue_log(log)
+
+    def _write_dialogue_log(self, log: dict) -> None:
+        """Append one turn record to logs/dialogue/<date>.jsonl (DIALOG.01).
+
+        Permanent storage: no auto-cleanup, only manual deletion.
+        """
+        import json
+        import time as _time
+
+        try:
+            d = _ROOT / "logs" / "dialogue"
+            d.mkdir(parents=True, exist_ok=True)
+            date_str = _time.strftime("%Y-%m-%d")
+            p = d / f"{date_str}.jsonl"
+            with p.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(log, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001 -- never block chat
+            logger.warning("dialogue log write failed: %s", exc)
+
+    async def _chat_impl(self, text: str, metadata: dict | None = None
+                         ) -> AsyncIterator[tuple[str, str]]:
+        """Routing and handling. Yields (display_text, tts_text) pairs.
 
         The P2 patch adapter converts these to SentenceOutput for OLV.
         TASK.RELEASE.08: a proactive announcement is spoken verbatim and
@@ -730,6 +1188,7 @@ class WaferAgent:
         speaker_id = _current_speaker.get("id", "unknown")
         role = _current_speaker.get("role", "member")
         self._ensure_pump()
+        self._turn_route = "announce"
         if metadata and metadata.get("wafer_announcement"):
             text = (text or "").strip()
             if text:
@@ -740,13 +1199,22 @@ class WaferAgent:
         # non-wake chatter is silent and never calls the LLM/bridge.
         if _wake_mode() == "asr" and _session.is_standby():
             if not _has_asr_wake(text):
+                self._turn_route = "asr_wake_drop"
                 logger.info("asr-wake: no wake phrase, silent drop (%r)",
                             (text or "")[:40])
+                # CONSOLE.11 A2: standby listening indicator (console panel)
+                await _publish(topics.WAKE_STATUS, {
+                    "mode": "asr", "state": "standby_drop",
+                    "detail": (text or "")[:30]})
                 return
             _session.wake()
             logger.info("asr-wake: wake phrase matched (%r)",
                         (text or "")[:40])
             await _publish(topics.WAKE_WORD, {"keyword": "asr"})
+            # CONSOLE.11 A2/D4: wake hit + idle timeout for the countdown
+            await _publish(topics.WAKE_STATUS, {
+                "mode": "asr", "state": "wake_hit",
+                "timeout_s": _session.timeout_s})
         bridge = self._ensure_bridge()
 
         # --- TASK.KWS.03: two-level wake verification ---
@@ -755,7 +1223,9 @@ class WaferAgent:
         # no state change) -- that is the price of the lower threshold.
         if _session.wake_needs_verify:
             _session.wake_needs_verify = False
-            if "小饼小饼" not in text and WORK_WAKE_KEYWORD not in text:
+            self._turn_route = "two_level_drop"
+            if ("小饼小饼" not in text and not _has_work_wake(text)
+                    and not _is_truncated_work_wake(text)):
                 logger.info("two-level wake: transcript lacks the wake "
                             "word, silently dropping (%r)", text[:40])
                 return
@@ -777,10 +1247,10 @@ class WaferAgent:
             # strip wake-word residues first: after standby re-entry the
             # transcript is "小饼小饼，批准" (D48: residue stays) -- the
             # exact-match below must see the bare cue
-            said = text
-            for residue in ("小饼小饼", WORK_WAKE_KEYWORD):
-                said = said.replace(residue, "")
+            said = text.replace("小饼小饼", "")
+            said = _strip_work_wake(said)
             said = said.strip("。.！!？?，, 、 \t")  # noqa: B005 (char set)
+            self._turn_route = "permission"
             if said in _APPROVE_CUES or said in _DENY_CUES:
                 allow = said in _APPROVE_CUES
                 await self._do_approval(allow)
@@ -829,15 +1299,33 @@ class WaferAgent:
         # transcript (the LLM already copes with it).
         work_wake = False
         if role == "admin":
-            if WORK_WAKE_KEYWORD in text:
-                text = text.replace(WORK_WAKE_KEYWORD, "").strip(
+            work_wake_hit = False
+            # Bare "小饼" can be the ASR truncation of "小饼干活"; making it
+            # work-wake even in an active session is safe because the phrase
+            # contains no other content to route as chat.
+            truncated = _is_truncated_work_wake(text)
+            if truncated:
+                logger.info("work-wake: recovered truncated ASR %r", text)
+                text = ""
+                work_wake_hit = True
+            elif _has_work_wake(text):
+                text = _strip_work_wake(text).strip(
                     "，。！？、 ,.!?\t")
+                work_wake_hit = True
+            if work_wake_hit:
                 if not text:
                     # bare work-wake: acknowledge + arm one-shot pending_work
+                    self._turn_route = "work_wake_bare"
                     _session.pending_work = True
                     msg = "好，说吧"
                     yield (msg, msg)
                     return
+                # D48 same-breath: work-wake + content in one utterance
+                # ALSO forces the task route (skip intent scoring) -- the
+                # old code only forced it for the pending_work follow-up,
+                # so vague task texts ("查一下刚才那个") fell to the gray
+                # band and the composer never saw them (CORE.04 finding)
+                work_wake = True
             if _session.pending_work:
                 _session.pending_work = False
                 work_wake = True  # next utterance after bare work-wake
@@ -846,8 +1334,9 @@ class WaferAgent:
         # A residue-only transcript ("小饼小饼") gets a scripted ack instead
         # of a full LLM turn: instant, zero tokens, and the user knows the
         # wake actually landed before speaking the real request.
-        probe = text.replace("小饼小饼", "").replace(WORK_WAKE_KEYWORD, "")
+        probe = _strip_work_wake(text.replace("小饼小饼", ""))
         probe = probe.strip("，。！？、 ,.!?\t")
+        self._turn_route = "chat_wake_bare"
         if not probe and "小饼小饼" in text and not announced_pending:
             msg = "嗯？我在呢"
             yield (msg, msg)
@@ -863,6 +1352,7 @@ class WaferAgent:
                     spoken, bridge._projects.aliases()
                     if bridge._projects else [], top=3)
                 candidate_str = "、".join(candidates) if candidates else "控制台"
+                self._turn_route = "clarify"
                 self._pending_clarify = {"task_text": remaining, "spoken": spoken}
                 # TASK.SLOT.03: announce on the bus (LED substitute text)
                 await _publish(topics.TASK_CLARIFY,
@@ -884,19 +1374,29 @@ class WaferAgent:
         else:
             route = _route(remaining, role, bridge.has_work())
 
+        self._turn_route = "session_end"
         if route == Route.SESSION_END:
+            # TASK.CORE.05: archive before clearing (summary layer)
+            if self._memory:
+                asyncio.get_event_loop().create_task(
+                    self._archive_session(list(self._memory)))
+            self._memory = []  # TASK.CORE.02: session ends, context resets
+            self._clear_session_context()
             yield ("晚安", "晚安")
             return
 
+        self._turn_route = "task_denied"
         if route == Route.TASK_DENIED:
             yield ("这个要主人来才行哦", "这个要主人来才行哦")
             return
 
+        self._turn_route = "task_direct"
         if route == Route.TASK_DIRECT:
             confirm = await bridge.submit(remaining, speaker_id)
             yield (confirm, confirm)
             return
 
+        self._turn_route = "task_amend"
         if route == Route.TASK_AMEND:
             result = await bridge.amend(remaining)
             if result:
@@ -907,11 +1407,23 @@ class WaferAgent:
                     yield pair
             return
 
+        self._turn_route = "task_cancel"
         if route == Route.TASK_CANCEL:
             result = await bridge.cancel()
             yield (result, result)
             return
 
+        # TASK.CORE.04 Bridge B: record this utterance for the composer's
+        # local anaphora resolution (both chat and task texts, capped at
+        # RECENT_MAX=5; cleared on project switch, D33; stays on this
+        # machine -- only the RESOLVED prompt goes to opencode, D14)
+        if remaining.strip():
+            if not hasattr(bridge, "_recent"):
+                bridge._recent = []
+            bridge._recent.append(remaining.strip())
+            bridge._recent = bridge._recent[-RECENT_MAX:]
+
+        self._turn_route = "chat"
         # CHAT or LLM gray band
         async for pair in self._chat_llm(remaining):
             yield pair
@@ -924,26 +1436,71 @@ class WaferAgent:
         LLM was still generating made both contend (LLM 1.16 tok/s, TTS RTF
         5.0). Serializing removes the contention; the extra wait is only the
         remaining LLM tokens (~1s for a short reply).
+
+        TASK.CORE.02 (2026-11-06): multi-turn context. Recent chat turns
+        are injected as messages so follow-ups ("具体说一下呢?") land; a
+        session gap (> _session.timeout_s since the last chat turn)
+        starts a clean slate.
         """
+        import time
+
+        now = time.monotonic()
+        if now - self._memory_ts > _session.timeout_s:
+            had_memory = bool(self._memory)
+            if had_memory:
+                logger.info("chat memory reset (session gap %.0fs)",
+                            now - self._memory_ts)
+                # TASK.CORE.05: archive the old session (summary + persist)
+                asyncio.get_event_loop().create_task(
+                    self._archive_session(list(self._memory)))
+            self._memory = []
+            # TASK.CORE.05: load context for the new session. Restart
+            # recovery (original-layer turns from disk) only applies when
+            # the process just started (no prior in-memory data); a
+            # same-process timeout must NOT re-inject just-archived turns.
+            self._session_context = self._load_session_context(
+                include_recovery=not had_memory)
+        self._memory_ts = now
+
         system = build_chat_system_prompt(self._robot_name)
-        messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": text}]
+        messages = ([{"role": "system", "content": system}]
+                    + self._session_context
+                    + list(self._memory[-MEMORY_MAX_MESSAGES:])
+                    + [{"role": "user", "content": text}])
 
         full = ""
+        _llm_start = time.monotonic()
+        first_token_at: float | None = None
         try:
             async for chunk in self._llm.chat_completion(messages):
                 if isinstance(chunk, str):
+                    if chunk and first_token_at is None:
+                        first_token_at = time.monotonic()
                     full += chunk
         except Exception as exc:  # noqa: BLE001
             logger.error("WaferAgent LLM error: %s", exc)
             fallback = f"{self._robot_name}出了点问题，我歇一下"
             yield (fallback, fallback)
             return
+        # DIALOG.01: capture LLM latency and emotion for the turn log.
+        # CONSOLE.13: llm_first/llm are offsets from the turn start so the
+        # console can place the LLM stage directly after the ASR stage.
+        llm_done = time.monotonic()
+        self._turn_llm_ms = int((llm_done - _llm_start) * 1000)
+        if self._turn_start:
+            self._turn_llm_total_ms = int(
+                (llm_done - self._turn_start) * 1000)
+            if first_token_at is not None:
+                self._turn_llm_first_ms = max(
+                    0, int((first_token_at - self._turn_start) * 1000))
+        if _turn_timing is not None:
+            _turn_timing["llm"] = self._turn_llm_total_ms
 
         emotion_tag, speak_text = parse_emotion_tag(full)
         if emotion_tag:
             await _publish(topics.LLM_EMOTION, {"tag": emotion_tag})
             logger.info("WaferAgent emotion: %s", emotion_tag)
+        self._turn_emotion = emotion_tag or ""
 
         buf = speak_text.strip()
         if not buf:
@@ -971,11 +1528,20 @@ class WaferAgent:
         if tail:
             yield (tail, tail)
 
-        # Keep recent context for the bridge composer (D14)
-        self._memory.append(text)
+        # Keep recent context (TASK.CORE.02): injected into the next chat
+        # turn's messages. User text is stored wake-residue-stripped; the
+        # assistant side is the tag-stripped speak_text.
+        user_clean = _strip_work_wake(text.replace("小饼小饼", ""))
+        user_clean = user_clean.strip("，。！？、 ,.!?\t")
+        self._memory.append({"role": "user",
+                             "content": (user_clean or text)})
         if speak_text.strip():
-            self._memory.append(speak_text.strip())
-        self._memory = self._memory[-RECENT_MAX:]
+            self._memory.append({"role": "assistant",
+                                 "content": speak_text.strip()})
+        self._memory = self._memory[-MEMORY_MAX_MESSAGES:]
+
+        # TASK.CORE.05: persist to disk after every turn (restart recovery)
+        self._persist_memory()
 
     def handle_interrupt(self, heard_response: str) -> None:
         """Called when user interrupts the agent mid-speech."""
@@ -1123,9 +1689,15 @@ def _wake_mode() -> str:
 
 
 def _has_asr_wake(text: str) -> bool:
-    """Match the wake phrase after ASR, ignoring spaces/punctuation."""
-    compact = re.sub(r"[\s，。！？、,.!?]+", "", text or "")
-    return "小饼小饼" in compact or WORK_WAKE_KEYWORD in compact
+    """Match the wake phrase after ASR, ignoring spaces/punctuation.
+
+    ``_is_truncated_work_wake`` covers the observed 0.6B ASR failure where
+    bare "小饼干活" is decoded as "小饼。" (the next utterance still gets the
+    work-wake semantics via the follow-up fallback).
+    """
+    compact = _compact_text(text)
+    return ("小饼小饼" in compact or _has_work_wake(text)
+            or compact == "小饼")
 
 
 logger.info("wafer session mode=%s always_on=%r wake_mode=%s",
@@ -1253,5 +1825,12 @@ async def wake_check(audio: Any) -> bool:
     return False
 
 async def publish_state(state: str) -> None:
-    """P4: publish session.state to hub (called by fork patches)."""
-    await _publish(topics.SESSION_STATE, {"state": state})
+    """P4: publish session.state to hub (called by fork patches).
+
+    CONSOLE.11 D4: timeout_s rides along so the console can run the
+    back-to-standby countdown off last_event_t.
+    """
+    payload: dict = {"state": state}
+    if state == "listening":
+        payload["timeout_s"] = _session.timeout_s
+    await _publish(topics.SESSION_STATE, payload)

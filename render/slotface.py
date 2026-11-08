@@ -160,6 +160,10 @@ class ExpressionSlotController:
         self._permission_pending = False
         self._result_hold_until = 0.0
 
+    @property
+    def current_category(self) -> int:
+        return self._current_cat
+
     async def start(self) -> None:
         from core.bus import topics
 
@@ -177,6 +181,9 @@ class ExpressionSlotController:
         self._restored = True  # clock is the initial state
 
     def stop(self) -> None:
+        # Teardown must leave the device on its native clock, not the last
+        # expression (user rule: exit -> clock, no stale face).
+        self._restore_clock()
         self._cancel_timer()
         self._cancel_game_timer()
 

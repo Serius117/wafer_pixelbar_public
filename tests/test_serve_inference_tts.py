@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -70,9 +71,75 @@ def test_aliyun_provider_command() -> None:
     assert "--fp16" not in cmd
 
 
+def test_qwen_provider_command() -> None:
+    conf = _local_conf()
+    conf["tts"]["qwen_tts"] = {
+        "python": ".venv/Scripts/python.exe",
+        "server": "scripts/qwen_tts_server.py",
+        "model": "qwen3-tts-flash",
+        "voice": "Serena",
+        "endpoint": "https://example.invalid/native/tts",
+        "api_key_env": "QWEN_MAAS_API_KEY",
+        "voice_env": "QWEN_TTS_VOICE",
+        "sample_rate": 24000,
+        "timeout": 60,
+        "extra_args": [],
+    }
+    conf["tts"]["provider"] = "qwen_tts"
+    cmd = si._cmd(conf, "tts")
+    assert cmd[1].endswith("qwen_tts_server.py")
+    assert cmd[cmd.index("--model") + 1] == "qwen3-tts-flash"
+    assert cmd[cmd.index("--voice") + 1] == "Serena"
+    assert cmd[cmd.index("--api-key-env") + 1] == "QWEN_MAAS_API_KEY"
+    assert "--voice-id" not in cmd
+    assert "--prompt-wav" not in cmd
+
+
 def test_unknown_provider_rejected() -> None:
     with pytest.raises(SystemExit, match="unknown tts provider"):
         si._cmd(_local_conf("bogus"), "tts")
+
+
+def _asr_conf(device: str) -> dict:
+    return {
+        "llama_server": "tools/llama/llama-server.exe",
+        "asr": {
+            "model": "models/asr/asr.gguf",
+            "mmproj": "models/asr/mmproj.gguf",
+            "host": "127.0.0.1",
+            "port": 8001,
+            "ctx": 1024,
+            "device": device,
+            "alias": "qwen3-asr",
+            "extra_args": ["--no-webui"],
+        },
+    }
+
+
+def test_stop_only_asr_keeps_other_pids(tmp_path, monkeypatch) -> None:
+    pid_file = tmp_path / "infer_pids.json"
+    pid_file.write_text(json.dumps({"asr": 222, "tts": 333}),
+                        encoding="utf-8")
+    calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(si, "PID_FILE", pid_file)
+    monkeypatch.setattr(si, "_kill", lambda pid, why: calls.append((pid, why)))
+    monkeypatch.setattr(si, "_port_owner", lambda port: None)
+    si.stop(None, ["asr"])
+    assert calls == [(222, "asr")]
+    assert json.loads(pid_file.read_text(encoding="utf-8")) == {"tts": 333}
+
+
+def test_asr_device_selects_gpu_or_cpu() -> None:
+    cpu = si._cmd(_asr_conf("cpu"), "asr")
+    gpu = si._cmd(_asr_conf("gpu"), "asr")
+    assert cpu[cpu.index("-ngl") + 1] == "0"
+    assert gpu[gpu.index("-ngl") + 1] == "99"
+    assert cpu[cpu.index("--port") + 1] == "8001"
+
+
+def test_default_qwen_tts_is_nonstreaming() -> None:
+    conf = si.load_config(ROOT / "config" / "inference.yaml")
+    assert conf["tts"]["qwen_tts"]["model"] == "qwen3-tts-flash"
 
 
 def test_repo_configs_build_tts_commands() -> None:

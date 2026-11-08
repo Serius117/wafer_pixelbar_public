@@ -14,7 +14,9 @@ TTS_AMPLITUDE = "tts.amplitude"      # {rms: 0.0~1.0}  @30Hz throttled
 # --- Session & identity ---------------------------------------------------
 SESSION_STATE = "session.state"      # {state: "standby"|"listening"|...}
 GATE_DECISION = "gate.decision"      # {verdict, speaker_id, score}
+GATE_ENABLED = "gate.enabled"        # {enabled: bool}  CONSOLE.11 console toggle
 WAKE_WORD = "wake.word"              # {keyword}  KWS hit (T6.4; console/audit feed)
+WAKE_STATUS = "wake.status"          # {mode, state, detail?, timeout_s?}  CONSOLE.11 A2
 
 # --- LLM & emotion --------------------------------------------------------
 LLM_EMOTION = "llm.emotion"          # {tag: "happy"|...}

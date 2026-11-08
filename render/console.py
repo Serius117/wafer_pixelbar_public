@@ -26,6 +26,8 @@ from urllib.parse import parse_qs, urlparse
 
 from core.bus import topics
 from core.bus.hub import InProcBus
+from engines.provider_state import load_state as load_provider_state
+from engines.provider_state import save_state as save_provider_state
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ STYLE_META: list[tuple[str, str, str]] = [
     ("bubble", "Bubble", "圆眼+高光点（EMO 机器人式）——高光给眼睛生命感"),
     ("mech", "Mech", "WALL-E 式方眼+扫描线——工业质感"),
     ("claw", "Claw", "开源 claw-face 改编（MIT）——每眼 8 自由度+300ms 平滑变形"),
+    ("whale", "Whale", "线条鲸（TASK.AVATAR.01）——横向身体适配 8:1 画幅，尾鳍+喷水+气泡"),
 ]
 
 COMPARE_THRESH = 50  # 1bpp threshold: lit if max(r,g,b) > T (true-device view)
@@ -73,10 +76,11 @@ class StylePreview:
         import render.faces.mech as _me
         import render.faces.mochi as _mo
         import render.faces.wafer as _wa
+        import render.faces.whale as _wh
 
         makers = {"wafer": _wa.WaferFace, "mochi": _mo.MochiFace,
                   "bubble": _b.BubbleFace, "mech": _me.MechFace,
-                  "claw": _cl.ClawFace}
+                  "claw": _cl.ClawFace, "whale": _wh.WhaleFace}
         self._faces = {sid: makers[sid]() for sid, _, _ in STYLE_META}
         self._lock = threading.Lock()
         self._last = time.monotonic()
@@ -130,7 +134,229 @@ STATUS_TOPICS = {
     topics.LLM_EMOTION,  # TEST.OLVCORE.11 finding: emotion events missing
     # from the stream -- the §4.9 design has an emotion panel; at minimum
     # the rolling log must show them
+    topics.WAKE_STATUS,  # CONSOLE.11 A2: standby listening indicator
+    topics.GATE_ENABLED,  # CONSOLE.11 rev: console gate toggle state
 }
+
+# --- TASK.CONSOLE.07: speaker management API ---------------------------------
+#
+# GET  /api/speakers         list profiles + enrollment status
+# POST /api/speakers         enroll: {speaker_id, name, role, priority,
+#                            samples: [base64 16k s16 PCM], overwrite?}
+# POST /api/speakers/delete  remove: {speaker_id}
+#
+# Reuses the enroll.py pipeline (sherpa CAM++ -> average -> JSON +
+# speakers.yaml). No auth for now (user ruling 2026-11-07: add admin
+# approval later). Enrollment caches live in the OLV process, so a
+# restart is required for new speakers to take effect.
+
+SPEAKERS_CONFIG = Path("config/speakers.yaml")
+DIALOGUE_DIR = Path("logs/dialogue")  # DIALOG.01 transcript root
+
+
+def _build_enroll_verifier(setup):  # noqa: ANN001 (GateSetup)
+    """Build the sherpa CAM++ verifier used by console enrollment.
+
+    Module-level so tests can monkeypatch it with a fake embedder.
+    """
+    from engines.voiceprint import SherpaCampplusVerifier
+
+    if setup.voiceprint_model is None:
+        raise FileNotFoundError(
+            "voiceprint.model not set in speakers.yaml (see docs)")
+    model_path = Path(setup.voiceprint_model)
+    if not model_path.exists():
+        raise FileNotFoundError(f"CAM++ model not found: {model_path}")
+    store = _enroll_store(setup)
+    return SherpaCampplusVerifier(store, model_path)
+
+
+def _enroll_store(setup):  # noqa: ANN001 (GateSetup)
+    """EnrollmentStore for the given setup (lazy import, engines layer)."""
+    from engines.voiceprint import EnrollmentStore
+
+    return EnrollmentStore(setup.embedding_dir)
+
+
+def _list_speakers() -> dict:
+    """Profiles from speakers.yaml + enrollment status from the store."""
+    from core.gate.profiles import load_gate_setup
+
+    setup = load_gate_setup(SPEAKERS_CONFIG)
+    enrolled = _enroll_store(setup).load()
+    speakers = [
+        {
+            "speaker_id": p.speaker_id,
+            "name": p.name,
+            "role": p.role,
+            "priority": p.priority,
+            "enrolled": p.speaker_id in enrolled,
+        }
+        for p in sorted(setup.profiles.values(),
+                        key=lambda p: p.priority)
+    ]
+    known = set(setup.profiles)
+    orphaned = sorted(sid for sid in enrolled if sid not in known)
+    return {"speakers": speakers, "orphaned": orphaned}
+
+
+# CONSOLE.11 rev: log tail API for the console log tab. Whitelist only --
+# never serve arbitrary paths.
+LIVE2D_MODELS = (
+    "Hiyori",
+    "Mao",
+    "DeepSeek-chan",
+    "whale-maid-live2d",
+)
+
+LOG_FILES: dict[str, str] = {
+    "olv": "logs/olv.log",
+    "bridge": "logs/bridge.log",
+    "render": "logs/render.log",
+    "hub": "logs/hub.log",
+    "llm": "logs/infer_llm.log",
+    "asr": "logs/infer_asr.log",
+    "tts": "logs/infer_tts.log",
+}
+
+
+def _tail_log(name: str, lines: int) -> dict:
+    rel = LOG_FILES.get(name)
+    if rel is None:
+        return {"error": f"未知日志源 {name!r}（可用：{'/'.join(LOG_FILES)}）"}
+    p = Path(rel)
+    if not p.exists():
+        return {"lines": [], "note": f"{rel} 尚未生成（服务未启动过）"}
+    try:
+        content = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return {"error": f"读取失败：{e}"}
+    all_lines = content.strip().splitlines()
+    return {"lines": all_lines[-lines:], "total": len(all_lines)}
+
+
+_SPEAKER_ID_OK = __import__("re").compile(r"^[a-z0-9_-]{1,32}$")
+
+# CONSOLE.11 D3: gate thresholds for the score gauge (mtime-cached so the
+# 1s polling does not re-read speakers.yaml every time).
+_GATE_CFG_CACHE: tuple[float, dict] | None = None
+
+
+def _gate_thresholds() -> dict:
+    global _GATE_CFG_CACHE
+
+    try:
+        mtime = (SPEAKERS_CONFIG.stat().st_mtime
+                 if SPEAKERS_CONFIG.exists() else 0.0)
+        if _GATE_CFG_CACHE is not None and _GATE_CFG_CACHE[0] == mtime:
+            return _GATE_CFG_CACHE[1]
+        from core.gate.profiles import load_gate_setup
+
+        setup = load_gate_setup(SPEAKERS_CONFIG)
+        cfg = {"t_pass": setup.config.t_pass, "t_gray": setup.config.t_gray}
+        _GATE_CFG_CACHE = (mtime, cfg)
+        return cfg
+    except Exception:  # noqa: BLE001 -- defaults keep the panel alive
+        return {"t_pass": 0.52, "t_gray": 0.45}
+
+
+def _enroll_speaker(body: dict) -> tuple[dict, int]:
+    """Enroll one speaker from base64 PCM samples. Returns (json, code)."""
+    import base64
+    import binascii
+
+    from core.gate.profiles import load_gate_setup
+    from scripts.enroll import update_speakers_yaml
+
+    speaker_id = str(body.get("speaker_id", "")).strip()
+    name = str(body.get("name", "")).strip()
+    role = str(body.get("role", "member"))
+    priority = body.get("priority", 99)
+    samples_b64 = body.get("samples") or []
+    overwrite = bool(body.get("overwrite"))
+
+    if not _SPEAKER_ID_OK.match(speaker_id):
+        return {"error": "speaker_id 只允许小写字母/数字/_/-，长度 1-32"}, 400
+    if not name:
+        return {"error": "name 不能为空"}, 400
+    if role not in ("admin", "member"):
+        return {"error": "role 只允许 admin 或 member"}, 400
+    try:
+        priority = int(priority)
+    except (TypeError, ValueError):
+        return {"error": "priority 必须是整数"}, 400
+    if not samples_b64:
+        return {"error": "samples 为空：请先录音"}, 400
+
+    # decode PCM samples (16 kHz mono s16)
+    samples: list[bytes] = []
+    for i, b64 in enumerate(samples_b64):
+        try:
+            pcm = base64.b64decode(str(b64))
+        except (binascii.Error, ValueError):
+            return {"error": f"第 {i + 1} 段音频 base64 解码失败"}, 400
+        if len(pcm) < 16000:  # < 0.5 s of audio
+            return {"error": f"第 {i + 1} 段音频太短（<0.5s）"}, 400
+        samples.append(pcm)
+
+    setup = load_gate_setup(SPEAKERS_CONFIG)
+    store = _enroll_store(setup)
+    if speaker_id in store.load() and not overwrite:
+        return {"error": f"说话人 '{speaker_id}' 已注册；重新注册请勾选覆盖"}, 409
+
+    try:
+        verifier = _build_enroll_verifier(setup)
+        embeddings = [verifier.embed(pcm) for pcm in samples]
+        from engines.voiceprint import average_embedding
+
+        embedding = average_embedding(embeddings)
+    except FileNotFoundError as e:
+        return {"error": f"声纹模型不可用：{e}"}, 503
+    except Exception as e:  # noqa: BLE001 -- surface to the panel
+        return {"error": f"声纹提取失败：{e}"}, 500
+    if not embedding:
+        return {"error": "embedding 为空"}, 500
+
+    emb_path = store.save(speaker_id, embedding)
+    update_speakers_yaml(SPEAKERS_CONFIG, speaker_id, name, role,
+                         priority, emb_path.as_posix())
+    logger.info("console enroll: %s (%s/%s, %d samples)",
+                speaker_id, name, role, len(samples))
+    return {
+        "ok": True,
+        "speaker_id": speaker_id,
+        "dim": len(embedding),
+        "note": "注册已保存；重启 OLV 服务后生效（enrollment 缓存在进程内）",
+    }, 200
+
+
+def _delete_speaker(body: dict) -> tuple[dict, int]:
+    """Remove one speaker: embedding file + speakers.yaml entry."""
+    import yaml
+
+    from core.gate.profiles import load_gate_setup
+
+    speaker_id = str(body.get("speaker_id", "")).strip()
+    if not speaker_id:
+        return {"error": "speaker_id 不能为空"}, 400
+
+    setup = load_gate_setup(SPEAKERS_CONFIG)
+    _enroll_store(setup).delete(speaker_id)
+
+    # drop the yaml entry, keeping the rest of the file intact
+    raw: dict = {}
+    if SPEAKERS_CONFIG.exists():
+        raw = yaml.safe_load(
+            SPEAKERS_CONFIG.read_text(encoding="utf-8")) or {}
+    speakers = raw.setdefault("speakers", {})
+    removed = speakers.pop(speaker_id, None) is not None
+    SPEAKERS_CONFIG.write_text(
+        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+        encoding="utf-8")
+    logger.info("console speaker delete: %s (yaml entry: %s)",
+                speaker_id, removed)
+    return {"ok": True, "speaker_id": speaker_id,
+            "note": "已删除；重启 OLV 服务后生效"}, 200
 
 
 class ConsoleBridge:
@@ -168,9 +394,12 @@ class ConsoleBridge:
         """Derive the status summary from the newest events per topic."""
         state: dict[str, Any] = {
             "session_state": "standby",
+            "timeout_s": None,
             "mode": "normal",
             "gate": None,
+            "gate_enabled": None,
             "wake_word": None,
+            "wake_status": None,
             "task": None,
             "notify": None,
             "current_project": None,
@@ -183,10 +412,19 @@ class ConsoleBridge:
                 state["last_event_t"] = event.get("t")
                 if topic == topics.SESSION_STATE:
                     state["session_state"] = payload.get("state")
+                    # CONSOLE.11 D4: idle timeout for the countdown
+                    if payload.get("timeout_s"):
+                        state["timeout_s"] = payload.get("timeout_s")
                 elif topic == topics.MODE_SWITCH:
                     state["mode"] = payload.get("mode")
                 elif topic == topics.GATE_DECISION:
                     state["gate"] = payload
+                elif topic == topics.GATE_ENABLED:
+                    # CONSOLE.11 rev: console gate toggle state
+                    state["gate_enabled"] = payload.get("enabled")
+                elif topic == topics.WAKE_STATUS:
+                    # CONSOLE.11 A2: standby/wake indicator payload
+                    state["wake_status"] = payload
                 elif topic == topics.WAKE_WORD:
                     state["wake_word"] = payload.get("keyword")
                 elif topic == topics.TASK_REQUEST:
@@ -320,10 +558,48 @@ class _Handler(BaseHTTPRequestHandler):
     bridge: ConsoleBridge = None  # injected by serve()
     index_html: bytes = b""
     compare_html: bytes = b""
+    app_html: bytes = b""  # D62 unified shell (tab page)
     style_preview: StylePreview = None  # injected by serve()
 
     def log_message(self, fmt, *args) -> None:  # quiet
         pass
+
+    _SERVICE_PORTS = {
+        "hub": 8765, "render": 8790, "llm": 8080,
+        "asr": 8001, "tts": 9880, "olv": 12393,
+    }
+
+    def _probe_services(self) -> dict:
+        """TASK.CONSOLE.05 C1: TCP health for the six services."""
+        import socket
+
+        result = {}
+        for name, port in self._SERVICE_PORTS.items():
+            try:
+                with socket.create_connection(
+                        ("127.0.0.1", port), timeout=0.5):
+                    result[name] = {"port": port, "up": True}
+            except (TimeoutError, OSError):
+                result[name] = {"port": port, "up": False}
+        return {"services": result, "ts": __import__("time").time()}
+
+    def _probe_vram(self) -> dict:
+        """TASK.CONSOLE.05 C2: GPU VRAM via nvidia-smi (if present)."""
+        import shutil
+        import subprocess
+
+        if not shutil.which("nvidia-smi"):
+            return {"vram": None, "reason": "nvidia-smi not found"}
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                timeout=3, text=True)
+            used, total = out.strip().split(",")[0].strip(), \
+                out.strip().split(",")[1].strip()
+            return {"vram": {"used_mb": int(used), "total_mb": int(total)}}
+        except Exception:  # noqa: BLE001 -- never break the console
+            return {"vram": None, "reason": "nvidia-smi failed"}
 
     def _html(self, body: bytes) -> None:
         self.send_response(200)
@@ -348,8 +624,17 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._html(self.index_html)
+        elif parsed.path == "/app":
+            # D62 unified shell: tab bar + OLV/console iframes
+            self._html(self.app_html)
         elif parsed.path == "/compare":
             self._html(self.compare_html)
+        elif parsed.path == "/api/debug/services":
+            # TASK.CONSOLE.05 C-group: service health (TCP port probes)
+            self._json(self._probe_services())
+        elif parsed.path == "/api/debug/vram":
+            # TASK.CONSOLE.05 C2: GPU VRAM usage (nvidia-smi)
+            self._json(self._probe_vram())
         elif parsed.path == "/api/compare":
             qs = parse_qs(parsed.query)
             expression = qs.get("expression", [None])[0]
@@ -376,8 +661,74 @@ class _Handler(BaseHTTPRequestHandler):
                 ],
                 "default": cfg.default_alias,
             })
+        elif parsed.path == "/api/speakers":
+            # TASK.CONSOLE.07: speaker list + enrollment status
+            try:
+                self._json(_list_speakers())
+            except Exception as e:  # noqa: BLE001 -- panel must not 500
+                self._json({"error": f"读取说话人失败：{e}"}, 500)
+        elif parsed.path == "/api/dialogue":
+            # TASK.CONSOLE.08: dialogue transcript (DIALOG.01 jsonl)
+            qs = parse_qs(parsed.query)
+            date = qs.get("date", [None])[0] or time.strftime("%Y-%m-%d")
+            try:
+                limit = max(1, min(500, int(qs.get("limit", ["100"])[0])))
+            except ValueError:
+                limit = 100
+            entries: list[dict] = []
+            p = DIALOGUE_DIR / f"{date}.jsonl"
+            if p.exists():
+                for ln in p.read_text(encoding="utf-8").strip().splitlines():
+                    if not ln:
+                        continue
+                    try:
+                        entries.append(json.loads(ln))
+                    except json.JSONDecodeError:
+                        continue
+            # CONSOLE.13: TTS first-audio timing is appended by the OLV
+            # tts_manager hook after the dialogue record is written.  Merge
+            # the sidecar by stable turn id so the JSONL schema stays
+            # append-only and old transcripts remain readable.
+            sidecar = DIALOGUE_DIR / f"{date}.latency.jsonl"
+            fragments: dict[str, dict] = {}
+            if sidecar.exists():
+                for ln in sidecar.read_text(encoding="utf-8").strip().splitlines():
+                    if not ln:
+                        continue
+                    try:
+                        item = json.loads(ln)
+                    except json.JSONDecodeError:
+                        continue
+                    turn_id = item.get("id")
+                    if turn_id:
+                        fragments[turn_id] = item.get("latency_ms") or {}
+            for entry in entries:
+                fragment = fragments.get(entry.get("id"))
+                if fragment:
+                    latency = entry.setdefault("latency_ms", {})
+                    if isinstance(latency, dict):
+                        latency.update(fragment)
+            self._json({"date": date, "count": len(entries),
+                        "entries": entries[-limit:]})
+        elif parsed.path == "/api/logs":
+            # TASK.CONSOLE.11 rev: log tail (whitelisted sources)
+            qs = parse_qs(parsed.query)
+            name = qs.get("name", ["olv"])[0]
+            try:
+                lines = max(1, min(500, int(qs.get("lines", ["150"])[0])))
+            except ValueError:
+                lines = 150
+            result = _tail_log(name, lines)
+            result["name"] = name
+            self._json(result, 404 if "error" in result else 200)
+        elif parsed.path == "/api/providers":
+            self._json({"ok": True, "state": load_provider_state()})
         elif parsed.path == "/api/state":
-            self._json(self.bridge.latest())
+            state = self.bridge.latest()
+            state["providers"] = load_provider_state()
+            # CONSOLE.11 D3: gate thresholds for the score gauge
+            state["gate_thresholds"] = _gate_thresholds()
+            self._json(state)
         elif parsed.path == "/api/events":
             qs = parse_qs(parsed.query)
             since = int(qs.get("since", ["0"])[0])
@@ -387,7 +738,56 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
-        if urlparse(self.path).path != "/api/ctl":
+        path = urlparse(self.path).path
+        if path == "/api/providers":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                state = save_provider_state(body)
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            self._json({"ok": True, "state": state})
+            return
+        if path == "/api/live2d-model":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                model = str(body.get("model") or "").strip()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._json({"error": "bad json"}, 400)
+                return
+            if model not in LIVE2D_MODELS:
+                self._json({"error": f"unknown Live2D model: {model}"}, 400)
+                return
+            try:
+                import httpx
+
+                r = httpx.post("http://127.0.0.1:12393/switch-model",
+                               json={"model_name": model}, timeout=15.0)
+                self._json({"ok": r.status_code == 200, "model": model,
+                            "detail": r.text[:200]},
+                           200 if r.status_code == 200 else 502)
+            except Exception as exc:  # noqa: BLE001 -- console never crashes
+                self._json({"error": f"OLV switch failed: {exc}"}, 502)
+            return
+        if path in ("/api/speakers", "/api/speakers/delete"):
+            # TASK.CONSOLE.07: speaker enrollment / deletion (file-level
+            # operations, same precedent as project_add; no bus round-trip
+            # because the caller needs the synchronous result)
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._json({"error": "bad json"}, 400)
+                return
+            if path == "/api/speakers":
+                result, code = _enroll_speaker(body)
+            else:
+                result, code = _delete_speaker(body)
+            self._json(result, code)
+            return
+        if path != "/api/ctl":
             self._json({"error": "not found"}, 404)
             return
         length = int(self.headers.get("Content-Length", 0))
@@ -433,11 +833,16 @@ def serve(bus: InProcBus, host: str = "127.0.0.1", port: int = 8790,
     compare_path = CONSOLE_DIR / "compare.html"
     compare_html = (compare_path.read_bytes() if compare_path.exists()
                     else b"<h1>compare</h1>")
+    # D62: unified shell (tab bar + OLV iframe + console iframe)
+    app_path = CONSOLE_DIR / "app.html"
+    app_html = (app_path.read_bytes() if app_path.exists()
+                else b"<h1>app</h1>")
 
     handler = type("BoundHandler", (_Handler,), {
         "bridge": bridge,
         "index_html": html,
         "compare_html": compare_html,
+        "app_html": app_html,
         "style_preview": StylePreview(),
     })
     server = ThreadingHTTPServer((host, port), handler)

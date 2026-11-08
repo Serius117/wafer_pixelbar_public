@@ -105,7 +105,10 @@ class TextFaceController:
         self._restore()  # ensure known initial state
 
     def stop(self) -> None:
+        # Teardown must leave the device on its native clock, not the last
+        # text/kaomoji (user rule: exit -> clock, no stale face).
         self._cancel_timer()
+        self._restore()
 
     # --- push machinery ------------------------------------------------------
 

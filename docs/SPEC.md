@@ -172,7 +172,7 @@ session:
   timeout_sec: 8
   standby_default: true      # 睡眠默认（D22；常听已删除，此键仅留调试用途）
 task:
-  default_project: D:/code/wafer-pixel   # 未指明项目时发这里（D18）
+  default_project: .   # 未指明项目时发这里（D18）
   dispatch_grace_sec: 1.5                # 复述播完后的宽限窗（D15；0=立即派发）
 providers:
   asr: { impl: faster_whisper, model: small, device: cuda }   # 陪聊档(ghost): int8/cpu
@@ -255,4 +255,6 @@ updated: 2026-10-14
 - `text_frontend=true` 表示做文本规范化（需要 ttsfrd/WeTextProcessing；缺失时服务端日志 `no frontend is avaliable` 并退化为原文）。
 - 服务端内部按标点分句（首句 ≤10 字、后续 ≤40 字），**逐句非流式**合成后再出帧（模型级 `stream=True` 实测更慢且短句无早帧，D45）。
 - 在线 TTS（TASK.PROVIDER.02）：`scripts/minimax_tts_server.py` 保持同一 HTTP 契约，调用 MiniMax T2A v2；`voice_id` 原样透传；`tts.provider=minimax` 时由 `serve_inference` 启动。
+- Qwen3-TTS（TASK.VOICE.04/05）：`scripts/qwen_tts_server.py` 非流式走 native multimodal-generation，**默认** `/synthesize/frames` 返回整句单帧，播放稳定；`model=*realtime` 时走 DashScope WebSocket，`/synthesize/frames` 每收到一段 PCM 即封装为独立 WAV 帧（`u32 BE + RIFF`），不等待整句完成。realtime 在当前 OLV 逐帧播放器下会出现可闻断续，作为实验开关保留；`serve_inference` 通过 `--ws-url` 透传 WebSocket 地址。
 - 在线供应商配置（TASK.PROVIDER.01）：`config/inference.yaml` + gitignored `config/providers.local.yaml` 合并；密钥只从 `.env`/环境读取；`llm.provider=openai_compat` 时 OLV 使用云端 `/chat/completions`，不启动本地 9B。详见 `docs/design/PROVIDER_API.md`。
+- 本地 ASR 设备（TASK.VOICE.06）：`asr.device=cpu|gpu`；运行时由 `data/provider_state.json.asr` 覆盖。GPU 模式需要 CUDA 版 `llama-server`（可选 `llama_server_cuda`，本地默认 `tools/llama-cuda/llama-server.exe`）；CPU 模式用 `-ngl 0`。`GET/POST /api/providers` 同步该状态。

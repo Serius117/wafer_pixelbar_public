@@ -172,11 +172,12 @@ class TaskComposer:
         return text
 
     def _build_prompt(self, text: str, context: list[str] | None) -> str:
-        """Build the final structured prompt for opencode."""
-        parts = [text.strip()]
-        if context:
-            # Include last 3 context lines as background
-            bg = "\n".join(f"- {c.strip()}" for c in context[-3:] if c.strip())
-            if bg:
-                parts.append(f"\nRecent context:\n{bg}")
-        return "\n".join(parts)
+        """Build the final structured prompt for opencode.
+
+        TASK.CORE.04 D14 red line: the raw conversation context must
+        NEVER appear in the prompt sent to opencode -- it is used only
+        locally by _resolve_references to produce a self-contained
+        prompt. The old "Recent context" appendix (v1) leaked chat
+        content to the cloud and has been removed.
+        """
+        return text.strip()

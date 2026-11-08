@@ -47,6 +47,7 @@ async def _run(host: str, port: int, fps: int, use_device: bool,
     mood = None
     mood_sink = None
     slotface = None
+    device_preview = None
     if use_device:
         # --- E-scheme expression slots (SLOT.02, D61: v0.1 default) -------
         # v0.1 ships SLOT expressions as the default face; text mode stays
@@ -61,6 +62,9 @@ async def _run(host: str, port: int, fps: int, use_device: bool,
                 slotface = ExpressionSlotController(bus)
                 slotface._sink.open()
                 await slotface.start()
+                from render.device_preview import DevicePreview
+
+                device_preview = DevicePreview(slotface)
                 logger.info("PixelBar SLOT sink attached (E-scheme: "
                             "expression slots, idle %.0fs -> clock)",
                             IDLE_TIMEOUT_S)
@@ -142,6 +146,12 @@ async def _run(host: str, port: int, fps: int, use_device: bool,
         from render.console import serve as console_serve
 
         def _frame_provider():
+            # In slot mode the device is showing a scene category, not the
+            # simulated face loop.  Mirror the actual category (clock /
+            # expression) so the console LED is not a second, independent
+            # display.
+            if device_preview is not None:
+                return device_preview.frame()
             return _latest_frame["frame"]
 
         def _text_provider():
