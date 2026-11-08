@@ -62,7 +62,7 @@ class TestExportExpressions:
 
         with Image.open(out) as img:
             assert img.size == (256, 32)
-            assert list(img.convert("L").getdata()) == \
+            assert list(img.convert("L").tobytes()) == \
                 [255 if v else 0 for v in canvas]
 
     def test_15_dry_run_burn_plan(self, capsys):
