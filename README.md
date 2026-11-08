@@ -57,7 +57,7 @@ PixelBar 256×32 LED 上的庆祝表情（实拍）。
 
 ```bash
 git clone https://gitee.com/Serius_117/wafer_pixelbar_public.git
-cd wafer_pixel
+cd wafer_pixelbar_public
 pip install -e .[dev]
 
 # 全量测试；不需要麦克风、音箱或模型
