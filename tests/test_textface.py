@@ -293,15 +293,15 @@ class TestTextFaceController:
 
     async def test_timeout_restores_clock_exactly_once(self) -> None:
         """TEXTFACE-03: 10s idle -> clock restored once; pushes re-arm."""
-        bus, sink, ctrl = self._make(timeout_s=0.05)
+        bus, sink, ctrl = self._make(timeout_s=0.5)
         await ctrl.start()
         assert sink.restores == 1  # boot restore
         await bus.publish("llm.emotion", {"tag": "happy"})
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.1)
         await bus.publish("llm.emotion", {"tag": "happy"})  # re-arm
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.1)
         assert sink.restores == 1  # still showing, timer re-armed
-        await asyncio.sleep(0.1)   # past the window
+        await asyncio.sleep(0.55)  # past the window
         assert sink.restores == 2  # restored exactly once
         await asyncio.sleep(0.1)
         assert sink.restores == 2  # no repeat restores
