@@ -3,6 +3,7 @@
 > 把漫步者 Halo PixelBar 音箱变成有脸、有灯、只听家人话的语音 AI 管家。
 > 默认全本地运行（ASR / LLM / TTS）；可选接入云端 LLM 与在线 TTS。Windows 11 + RTX 4070S 实测。
 
+[![Version](https://img.shields.io/badge/version-v0.2-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
 
@@ -12,7 +13,7 @@ wafer-pixel 是一个“物理桌面 AI”实验项目：
 
 - **声纹门禁**：本地 CAM++ 先判断说话人；陌生人/待机杂音不进入 ASR、不发云端、不产生回复。
 - **本地语音闭环**：浏览器 VAD → 本地声纹门禁 → 本地 ASR → 本地 9B 或云端 LLM → 本地/在线 TTS → 音箱。
-- **语音唤醒**：v0.1 默认用 ASR 文本匹配「小饼小饼 / 小饼干活」；KWS 保留为实验开关。
+- **语音唤醒**：默认用 ASR 文本匹配「小饼小饼 / 小饼干活」；KWS 保留为实验开关。
 - **LED 表情**：PixelBar 类别槽位 + 氛围灯状态指示；表情由确定性渲染管线驱动，LLM 只输出情绪标签。
 - **编码派活**：说「小饼干活，帮我修一下登录报错」→ 转交 opencode 执行 → 进度/权限/结果回到语音和 LED。
 - **隐私优先**：本地门禁和本地 ASR 是默认路径；在线模式只发送已放行的文本，不发送原始音频。
@@ -38,16 +39,19 @@ PixelBar 256×32 LED 上的庆祝表情（实拍）。
 | 能力 | 状态 | 说明 |
 |---|---|---|
 | 本地语音闭环 | 已完成 | VAD → CAM++ 门禁 → qwen3-asr → LLM → TTS；本地默认 |
-| ASR 文本唤醒 | 已完成，v0.1 默认 | 待机先经过本地门禁，再匹配「小饼小饼 / 小饼干活」 |
-| KWS 唤醒 | 实验性 | 小模型对部分真实声线命中率不足；不作为 v0.1 默认 |
-| LED 槽位表情 | 已完成，v0.1 默认 | slot 2-7 类别切换；text 文本制保留回退 |
+| ASR 文本唤醒 | 已完成，默认 | 待机先经过本地门禁，再匹配「小饼小饼 / 小饼干活」 |
+| KWS 唤醒 | 实验性 | 小模型对部分真实声线命中率不足；不作为默认 |
+| LED 槽位表情 | 已完成 | slot 2-7 类别切换；控制台 LED 镜像时钟/表情 |
 | 权限确认闭环 | 代码/单测完成 | 语音批准/拒绝、TASK_APPROVE、LED/表情同步；真机仍待完整复验 |
 | opencode 派活 | 已完成 | 单任务、唯一 task_id、进度/结果播报、忙时拒绝 |
-| 在线 LLM | 已接入，待真实 key 验收 | 任意 OpenAI 兼容 `/chat/completions`；云端模式不启动本地 9B |
-| 在线 TTS | 已接入，待真实 key 验收 | MiniMax T2A v2；示例音色 `Chinese_crisp_podcaster_nv1` |
+| 在线 LLM | 已接入并实测 | MaaS `deepseek-v4.1-flash`；默认在线，可切本地 |
+| 在线 TTS | 已接入并实测 | Qwen3-TTS `Serena`；默认整段，realtime 为实验开关 |
+| ASR CPU/GPU | 已完成 | 控制台切换；0.6B 实测 CPU/GPU 速度 |
+| 多轮闲聊记忆 | v0.2 已完成 | L1 会话窗口 + L2 摘要/重启恢复 + L3 工作日志 |
+| 统一控制台 | v0.2 已完成 | 舞台切换、延迟/首帧统计、说话人、日志、项目、形象切换 |
+| Live2D 形象 | 已完成 | Hiyori / Mao / DeepSeek-chan / 鲸鱼女仆；控制台在线切换 |
 | 在线 ASR | 未启用 | 保留扩展；必须先过本地 VAD + 门禁，默认不把音频发云端 |
-| 多轮闲聊记忆 | v0.2 计划 | 当前仅保留有限会话上下文 |
-| 自动化验证 | 公开快照核心测试通过（不含音频 fixture） | smoke 需本地模型和推理服务（见 `INSTALL.md`） |
+| 自动化验证 | CI 绿 + 公开快照 | 公开仓 780 passed / 6 skipped（2026-11-08）；smoke 需本地模型（见 `INSTALL.md`） |
 
 ## 快速开始（零硬件模拟模式）
 
@@ -161,9 +165,10 @@ docs/         SPEC / design 设计文档
 
 ## 已知限制
 
-- 真机权限确认、批准后结果、MiniMax 真实音色仍需最终人工验收。
-- KWS 小模型对部分真实声线不稳定；v0.1 默认使用 ASR 文本唤醒。
-- 多轮闲聊记忆、Live2D 形象统一是 v0.2 方向。
+- 真机权限确认、批准后结果、在线音色仍需最终人工验收。
+- KWS 小模型对部分真实声线不稳定；当前默认使用 ASR 文本唤醒。
+- Live2D 形象质量取决于模型素材本身；仓库只提供切换能力，不附带模型资产。
+- opencode 目前按项目使用单个工作 session；多 session 绑定与语音指挥排入 v0.3。
 - 云端 ASR 未启用；如未来加入，必须复用本地门禁且默认关闭。
 - 公开仓库不包含音频 fixture、模型、声纹和 API key；按 `INSTALL.md` 自行准备本地资源。
 
@@ -173,10 +178,11 @@ docs/         SPEC / design 设计文档
 - [x] ASR 文本唤醒与双唤醒词
 - [x] LED 槽位表情与状态灯
 - [x] opencode 任务、权限、结果播报
-- [x] 在线 LLM / MiniMax TTS 适配器（mock + 契约）
-- [ ] v0.1 真机验收与 Gitee 公开仓发布
-- [ ] 在线 API 真实 key 验收
-- [ ] v0.2 多轮记忆、形象统一、Console 体验
+- [x] 在线 LLM / TTS（MaaS + Qwen3-TTS）与在线/本地切换
+- [x] v0.1 真机验收与 Gitee/GitHub 公开仓发布
+- [x] v0.2 多轮记忆、统一控制台、LED 镜像、Live2D 形象切换
+- [ ] v0.2 真机最终复验与 tag
+- [ ] v0.3 opencode 多 session 选择与语音指挥
 
 ## 许可证与致谢
 

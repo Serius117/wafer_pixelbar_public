@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wafer-pixel"
-version = "0.1.0.dev0"
+version = "0.2.0"
 description = "Turn an EDIFIER Halo PixelBar speaker into a voice companion with a pixel face (local voice stack + cloud coding agent)"
 readme = "README.md"
 license = { file = "LICENSE" }
