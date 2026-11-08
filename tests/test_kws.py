@@ -149,11 +149,13 @@ class TestTwoLevelVerification:
 
     async def test_10_flag_cleared_on_standby(self, agent):
         """TEST.WAKE.10: session timeout clears a stale verify flag."""
+        import time
+
         import olv.wafer_hooks as wh
 
         s = wh._SessionMode()
         s.state = "listening"
-        s.last_active = 0.0  # ancient -> timeout
+        s.last_active = time.monotonic() - 301.0  # ancient -> timeout
         s.wake_needs_verify = True
         assert s.is_standby() is True
         assert s.wake_needs_verify is False
